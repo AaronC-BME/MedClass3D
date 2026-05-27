@@ -1,0 +1,189 @@
+# =============================================================================
+# Self-contained training config — Age Ordinal Regression (CORAL).
+#
+# Launch:
+#   python scripts/train.py --config-name=train_age_ord_reg
+#
+# Override any key on the CLI:
+#   python scripts/train.py --config-name=train_age_ord_reg \
+#     trainer.devices=2 model.lr=5e-4 data.module.batch_size=8
+#
+# To create a new experiment: copy this file to configs/train_<your_name>.yaml,
+# edit the placeholders, and launch with --config-name=train_<your_name>.
+# =============================================================================
+
+# ---- Output ----------------------------------------------------------------
+# Output root. Set the EXPERIMENT_LOCATION env var to override per-job on a
+# cluster, or replace the fallback below with a hard path for local runs.
+output_dir: ${oc.env:EXPERIMENT_LOCATION,"<path_to_output>"}
+
+# Where Hydra snapshots the resolved config for each run. Do not edit.
+output_subdir: ${output_dir}/${data.module.name}/${trainer.logger.name}/Configs
+hydra:
+  output_subdir: ${output_subdir}
+  job:
+    chdir: False
+  run:
+    dir: .
+
+# ---- Run misc --------------------------------------------------------------
+seed: False        # False = no seeding; set to an int for reproducibility
+val_only: False    # True = skip fit(), only run validate()
+
+# Metric names; resolved against evaluation/metrics.py
+metrics:
+  - 'mae'
+  - 'mse'
+
+# ============================================================================
+# Data
+# ============================================================================
+data:
+  module:
+    _target_: medregression3d.data.datamodules.AgeReg_DataModule
+    name: AgeOrdinalRegression          # Used in the on-disk output path and as the W&B project default
+    img_dir: <path_to_dataset>/preprocessed_b2nd   # points at the .b2nd files; preprocessing.json sits one level up
+    csv_file: <path_to_csv_file>
+    label_column: label                 # CSV column holding the regression target
+    batch_size: 4
+    num_workers: 12
+    random_batches: False
+    prepare_data_per_node: False
+    fold: null                          # auto-set per fold by cli.py during CV
+
+    train_transforms:
+      _target_: medregression3d.data.batchgenerators_transforms.get_training_transforms
+      patch_size: ${data.patch_size}
+      rotation_for_DA: 0.523599
+      mirror_axes: [0, 1, 2]
+      do_dummy_2d_data_aug: False
+    test_transforms:
+      _target_: medregression3d.data.batchgenerators_transforms.get_test_transforms
+      patch_size: ${data.patch_size}
+      do_dummy_2d_data_aug: False
+
+  cv:
+    k: 1                                # 1 = single run, >1 = k-fold CV
+  num_classes: 100                      # Ordinal levels (e.g. 100 = ages 0..99). CORAL emits k-1 logits.
+  patch_size: [160, 160, 160]
+
+# ============================================================================
+# Model
+# ============================================================================
+model:
+  # Available _target_ classes:
+  #   medregression3d.models.backbones.resenc.ResEncoder_Regressor           (plain regression head)
+  #   medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor    (CORAL head)
+  #   medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor_MLP (CORAL head + MLP)
+  _target_: medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor
+  name: ${model_name_extractor:${model._target_}}
+
+  # Task + loss
+  task: 'Ordinal_Regression'            # 'Regression' | 'Ordinal_Regression'
+  loss_fn: null                         # null = task default (CORAL for Ord_Reg, MSE for Reg).
+                                        # Ordinal alternatives: focal, topk10, topk20,
+                                        # bce_focal, bce_topk10, bce_topk20, weighted_bce, bce_mae
+
+  # Input shape (must match data.patch_size)
+  input_dim: 3
+  input_channels: 1
+  input_shape: ${data.patch_size}
+  num_classes: ${data.num_classes}
+  cifar_size: False
+
+  # Pretrained init
+  pretrained: False
+  chpt_path: null                       # path to checkpoint when pretrained=True
+
+  # Head + finetuning
+  regression_head_dropout: 0.2
+  finetune_method: full_sawtooth        # full | full_sawtooth
+  token_aggregation_method: null
+
+  # Optimizer
+  optimizer: AdamW                      # SGD | Adam | AdamW | Rmsprop | Madgrad
+  lr: 0.001
+  weight_decay: 1e-2
+  nesterov: False
+  sam: False                            # set trainer.precision=32 if enabling
+  adaptive_sam: False
+  undecay_norm: False
+
+  # Scheduler
+  scheduler: CosineAnneal               # CosineAnneal | Step | MultiStep | null
+  T_max: ${trainer.max_epochs}
+  warmstart: 0
+  warmstart2: 0
+  epochs: ${trainer.max_epochs}
+
+  # Regularization
+  mixup: False
+  mixup_alpha: 0.2
+  label_smoothing: 0.0
+  stochastic_depth: False
+  resnet_dropout: 0.0
+  squeeze_excitation: False
+  apply_shakedrop: False
+  zero_init_residual: False
+
+  # Metrics + logging
+  metric_computation_mode: 'epochwise'  # 'epochwise' | 'stepwise'
+  result_plot: 'val'                    # 'val' | 'all' | null
+  metrics: ${metrics}
+  save_preds: True
+
+  compile: False
+
+# ============================================================================
+# Trainer
+# ============================================================================
+trainer:
+  _target_: lightning.pytorch.Trainer
+
+  devices: 1
+  accelerator: 'gpu'
+  strategy: 'auto'
+  precision: '16-mixed'
+  sync_batchnorm: True                  # auto-forced to True in cli.py when devices > 1
+  benchmark: True
+  deterministic: False
+
+  max_epochs: 200
+  accumulate_grad_batches: 48
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
+
+  enable_progress_bar: True
+  enable_checkpointing: True
+
+  callbacks:
+    progressbar:
+      _target_: lightning.pytorch.callbacks.TQDMProgressBar
+    lr_monitor:
+      _target_: lightning.pytorch.callbacks.LearningRateMonitor
+      logging_interval: epoch
+    checkpoint:
+      _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      dirpath: ???                      # set by cli.py to <output_dir>/<dataset>/<run_name>/folds/<k>
+      filename: 'epoch{epoch}-Val_loss={Val/loss:.2f}-Val_mae={Val/MAE:.2f}'
+      auto_insert_metric_name: False
+      monitor: 'Val/MAE'
+      mode: 'min'
+      save_top_k: 3
+      save_last: false
+      save_weights_only: false
+
+  logger:
+    _target_: lightning.pytorch.loggers.WandbLogger
+    save_dir: ${output_dir}/${data.module.name}
+    offline: False
+    project: <wandb_project_name>
+    name: <wandb_run_name>              # used for both W&B run name and the on-disk run folder.
+                                        # Use `${make_group_name:}` for an auto YYYY-MM-DD_HH-MM-SS timestamp.
+                                        # cli.py appends _fold{k} only when cv.k > 1.
+
+  # Debugging knobs (uncomment to use):
+  # limit_train_batches: 0.1
+  # limit_val_batches: 0.5
+  # limit_test_batches: 0.25
+  # gradient_clip_val: 0.5
