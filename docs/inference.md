@@ -43,12 +43,12 @@ If a run's `Configs/` is missing `preprocessing.json` (older runs from before th
 For each of `val` and `test`, this script:
 
 1. Builds the datamodule from `<run_dir>/Configs/config.yaml`.
-2. Loads the best-Val_MAE checkpoint from `<run_dir>/folds/<fold>/` (or `last.ckpt` with `--prefer-last`).
-3. Runs `trainer.predict()` and reads ground-truth labels from the training CSV.
+2. Loads the best-Val_acc checkpoint from `<run_dir>/folds/<fold>/` (or `last.ckpt` with `--prefer-last`).
+3. Runs `trainer.predict()` and reads ground-truth class labels from the training CSV.
 4. Writes:
-   - `predictions_<split>_fold<k>.xlsx` — `PatientID`, `GroundTruth`, `Prediction`, `Error`, `AbsError`.
-   - `error_by_age_bin_<split>_fold<k>.csv` + matching `_MAE.png` / `_MeanError.png` bar charts.
-   - `summary_<split>.csv` — `N`, `MAE`, `RMSE`, `MeanError`, `Pearson_r`.
+   - `predictions_<split>_fold<k>.xlsx` — `PatientID`, `GroundTruth`, `Pred`, `Prob_0`, `Prob_1`, …
+   - `confusion_matrix_<split>_fold<k>.png` — raw confusion matrix.
+   - `summary_<split>.csv` — `N`, `Accuracy`, `BalancedAccuracy`, `F1_macro`, `AUROC`.
 
 ### Arguments
 
@@ -57,10 +57,8 @@ For each of `val` and `test`, this script:
 | `--run-dir` | — (required) | Training run directory (`<output_dir>/<dataset>/<run_name>`). Must contain `Configs/config.yaml` and `folds/<k>/*.ckpt`. |
 | `--fold` | `0` | Which fold's checkpoint to load. |
 | `--pred-dir` | `<run-dir>/predictions/` | Output directory. |
-| `--metrics` | `mae mse` | Metric names forwarded to the model. |
-| `--prefer-last` | off | Use `last.ckpt` instead of best-Val_MAE. |
-| `--age-bin-width` | `10` | Width of age bins in years. |
-| `--age-bin-max` | `100` | Upper age limit for binning. |
+| `--metrics` | `acc balanced_acc f1 auroc` | Metric names forwarded to the model. |
+| `--prefer-last` | off | Use `last.ckpt` instead of best-Val_acc. |
 
 ### Examples
 
@@ -102,12 +100,12 @@ After all inputs are preprocessed, the temp dir is fed to the model's `test_tran
 | `--fold` | `0` | Which fold's checkpoint to load. |
 | `--pred-dir` | `<run-dir>/predictions_external/` | Where `predictions.csv` is written. |
 | `--keep-preprocessed` | off | Keep the intermediate `.b2nd` files (in `<pred-dir>/external_preprocessed_b2nd/`) instead of deleting them. |
-| `--metrics` | `mae mse` | Metric names forwarded to the model. |
-| `--prefer-last` | off | Use `last.ckpt` instead of best-Val_MAE. |
+| `--metrics` | `acc balanced_acc f1 auroc` | Metric names forwarded to the model. |
+| `--prefer-last` | off | Use `last.ckpt` instead of best-Val_acc. |
 
 ### Output
 
-`<pred_dir>/predictions.csv` — two columns: `PatientID`, `Prediction`. One row per successfully-preprocessed input. No ground truth, no metrics — there are no labels for external data.
+`<pred_dir>/predictions.csv` — columns `PatientID`, `Pred` (argmax class), and one `Prob_<i>` per class (softmax probabilities for multiclass / sigmoid for multilabel). One row per successfully-preprocessed input. No ground truth — external data has no labels.
 
 ### Examples
 

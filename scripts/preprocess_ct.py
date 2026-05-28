@@ -1,5 +1,5 @@
 """
-General-purpose CT preprocessing for SSL3D_regression.
+General-purpose CT preprocessing for MedClass3D.
 
 Reads raw NIfTI CT images, computes dataset-wide intensity statistics on the
 foreground (HU > -500), then for each case:

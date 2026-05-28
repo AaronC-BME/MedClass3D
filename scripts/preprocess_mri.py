@@ -1,5 +1,5 @@
 """
-General-purpose MRI preprocessing for SSL3D_regression.
+General-purpose MRI preprocessing for MedClass3D.
 
 Reads raw NIfTI MR images, then for each case:
   1. Resamples to a target spacing (auto-computed median by default,

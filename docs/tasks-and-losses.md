@@ -1,28 +1,51 @@
 # Tasks and losses
 
-The model block in each `configs/train_*.yaml` takes two related fields:
+The model block in each `configs/train_*.yaml` takes three related fields:
 
-- `task`: one of `'Regression'`, `'Ordinal_Regression'`.
-- `loss_fn`: name of the loss to use. When `null`, a sensible default is selected per task (see table below).
+- `task`: `'Classification'` — currently the only supported task.
+- `subtask`: `'multiclass'` (default) or `'multilabel'`. Controls how labels are interpreted at loss + metric time.
+- `loss_fn`: name of the loss to use. When `null`, a sensible default is selected per subtask.
 
-| `task`              | `loss_fn: null` (default) | Other valid `loss_fn` values                                                                                  |
-|---------------------|---------------------------|----------------------------------------------------------------------------------------------------------------|
-| `Regression`        | `MSELoss`                 | *(none)*                                                                                                       |
-| `Ordinal_Regression`| `coral_loss`              | `focal`, `topk10`, `topk20`, `bce_focal`, `bce_topk10`, `bce_topk20`, `weighted_bce`, `bce_mae`                |
+## Loss options
 
-Example ordinal-regression model block:
+| `loss_fn`        | What it is                                                                 | Class weights? |
+|------------------|----------------------------------------------------------------------------|----------------|
+| `null` (default) | `CrossEntropyLoss` (multiclass) or `BCEWithLogitsLoss` (multilabel)        | No             |
+| `focal`          | Focal loss with uniform alpha and gamma=2.0                                | No             |
+| `weighted_focal` | Focal loss with per-class alpha = train-split class weights, gamma=1.5     | Yes (from train) |
+| `weighted_ce`    | `F.cross_entropy(..., weight=class_weights, label_smoothing=...)`          | Yes (from train) |
+| `topk10`         | Mean of the top-10% per-sample CE losses (hard-example mining)             | No             |
+
+`weighted_focal` / `weighted_ce` pull their per-class weights from `datamodule.class_weights`, computed on the train split via the standard balanced formula `n_samples / (n_classes * n_samples_per_class)`, normalized to sum to `n_classes`. The criterion is constructed in `BaseModel.setup()` once the datamodule has run.
+
+## Subtask differences
+
+**Multiclass** (single class per sample):
+- CSV `label` column is the integer class index (`0`, `1`, ..., `num_classes - 1`).
+- Labels emitted as `torch.long`.
+- Loss expects logits `[B, num_classes]`, targets `[B]`.
+- Metrics receive `softmax(logits)`.
+
+**Multilabel** (multiple labels per sample):
+- CSV `label` column should encode a binary vector per row (project-specific encoding — see [data-csv-format](data-csv-format.md)).
+- Loss is BCEWithLogits over `[B, num_labels]`.
+- Metrics receive `sigmoid(logits)`.
+
+## Example
 
 ```yaml
 model:
-  task: 'Ordinal_Regression'
-  loss_fn: null   # uses CORAL loss by default
-  # ...
+  task: 'Classification'
+  subtask: 'multiclass'
+  loss_fn: weighted_ce        # picks up datamodule.class_weights automatically
+  label_smoothing: 0.05
+  num_classes: ${data.num_classes}
 ```
 
-For ordinal regression, set `num_classes` in the `data:` block to the number of ordinal levels (e.g. `100` for ages 0–99). The CORAL head emits `num_classes - 1` logits.
+Set `data.num_classes` to the number of classes in your dataset.
 
 To switch loss on the CLI without editing the file:
 
 ```bash
-python scripts/train.py --config-name=train_age_ord_reg model.loss_fn=focal
+python scripts/train.py --config-name=train_classification model.loss_fn=focal
 ```

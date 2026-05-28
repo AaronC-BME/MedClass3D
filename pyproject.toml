@@ -5,14 +5,14 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "medclass3d"
 version = "0.1.0"
-description = "3D medical image regression with PyTorch Lightning (age regression on brain scans)"
+description = "3D medical image classification with PyTorch Lightning"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [
     { name = "Aaron" },
 ]
-keywords = ["medical-imaging", "deep-learning", "pytorch", "regression", "3d", "mri"]
+keywords = ["medical-imaging", "deep-learning", "pytorch", "classification", "3d", "mri", "ct"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

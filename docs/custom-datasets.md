@@ -13,27 +13,28 @@ If your dataset can be described as "a directory of preprocessed `.b2nd` files p
            <image_id>.b2nd
    ```
 
-2. **Build a CSV** with `image_name`, `split`, `fold`, and a label column. See [data-csv-format.md](data-csv-format.md) for the schema.
+2. **Build a CSV** with `image_name`, `split`, `fold`, and a label column (integer class indices for classification). See [data-csv-format.md](data-csv-format.md) for the schema.
 
-3. **Copy a training config.** Pick the closest existing `configs/train_*.yaml` to your task:
-   - `configs/train_age_ord_reg.yaml` — ordinal regression (CORAL)
-   - `configs/train_age_reg.yaml` — plain regression (MSE)
-
-   Then copy it to `configs/train_<your_name>.yaml` and edit the placeholders:
+3. **Copy `configs/train_classification.yaml` to `configs/train_<your_name>.yaml`** and edit the placeholders:
 
    ```yaml
    data:
      module:
-       _target_: medclass3d.data.datamodules.AgeReg_DataModule
+       _target_: medclass3d.data.datamodules.Class_DataModule
        name: YourDatasetName
        img_dir: /path/to/<out-root>/preprocessed_b2nd   # points at the b2nd files
        csv_file: /path/to/splits_labels.csv
-       label_column: label                  # or "age", etc.
+       label_column: label                  # or "pathology", etc.
+       use_balanced_sampling: False         # set True for KClassBalancedBatchSampler
        batch_size: 4
      cv:
        k: 1                                 # 1 = single run, >1 = k-fold CV
-     num_classes: 100                       # ordinal levels (e.g. 100 = ages 0..99)
+     num_classes: 4                         # number of classes in your dataset
      patch_size: [160, 160, 160]
+
+   model:
+     subtask: 'multiclass'                  # or 'multilabel'
+     loss_fn: null                          # null=CE; or focal / weighted_focal / weighted_ce / topk10
 
    trainer:
      logger:
@@ -61,16 +62,17 @@ If your dataset can be described as "a directory of preprocessed `.b2nd` files p
    python scripts/train.py --config-name=train_<your_name> \
        trainer.devices=2 \
        model.lr=5e-4 \
-       data.module.batch_size=8
+       data.module.batch_size=8 \
+       model.loss_fn=weighted_ce
    ```
 
 ## When you actually need a custom `DataModule`
 
-Write a new `DataModule` only if your data doesn't fit the `AgeReg_DataModule` pattern — for example:
+Write a new `DataModule` only if your data doesn't fit the `Class_DataModule` pattern — for example:
 
 - **Multiple images per case** (e.g., paired modalities, multi-channel inputs).
 - **Per-fold splits** where the same image is `train` in one fold and `val` in another.
-- **Non-standard label structure** (e.g., multi-label classification, segmentation targets, censored survival times).
+- **Non-trivial multilabel encoding** beyond a single integer column (e.g., a serialized binary vector per row).
 - **A different file format** than `.b2nd`.
 
-In that case, mirror [`src/medclass3d/data/datamodules.py`](../src/medclass3d/data/datamodules.py) as a starting point: subclass `BaseDataModule`, accept your paths via `__init__`, and instantiate your `Dataset` in `setup()`. Then point your config's `data.module._target_` at your new class.
+In that case, mirror [`src/medclass3d/data/datamodules.py`](../src/medclass3d/data/datamodules.py) as a starting point: subclass `BaseDataModule`, accept your paths via `__init__`, and instantiate your `Dataset` in `setup()`. If you want class-weighted losses (`weighted_ce` / `weighted_focal`) to keep working, expose a `class_weights` attribute on the datamodule (a 1-D `torch.FloatTensor` of length `num_classes`); the trainer picks it up in `setup()`. Then point your config's `data.module._target_` at your new class.

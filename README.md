@@ -1,14 +1,15 @@
-# 3D medical image regression and ordinal regression repository
+# 3D medical image classification repository
 <sub>Copyright German Cancer Research Center (DKFZ) and contributors. Please make sure that your usage of this code is in compliance with its license.<sub>
 
-This repository extends and builds on [constantinulrich/SSL3D_classification](https://github.com/constantinulrich/SSL3D_classification), refocused on **regression** and **ordinal regression** tasks. The upstream repository in turn builds on the [IMAGE CLASSIFICATION FRAMEWORK BY HELMHOLTZ IMAGING](https://github.com/MIC-DKFZ/image_classification) and supports fine-tuning checkpoints from [nnssl](https://github.com/MIC-DKFZ/nnssl).
+This repository builds on [constantinulrich/SSL3D_classification](https://github.com/constantinulrich/SSL3D_classification), which in turn builds on the [IMAGE CLASSIFICATION FRAMEWORK BY HELMHOLTZ IMAGING](https://github.com/MIC-DKFZ/image_classification) and supports fine-tuning checkpoints from [nnssl](https://github.com/MIC-DKFZ/nnssl).
 
 The main differences from upstream:
-- A `Regression` task with MSE loss.
-- An `Ordinal_Regression` task using the [CORAL](https://arxiv.org/abs/1901.07884) formulation, with several alternative ordinal losses (focal, top-k, weighted BCE, BCE+MAE, etc.) selectable via a `loss_fn` config field.
-- Model variants: `ResEncoder_Regressor` (plain regression head), `ResEncoder_OrdinalRegressor` (CORAL-style head), and `ResEncoder_OrdinalRegressor_MLP` (CORAL head with an MLP projection).
-- Two inference scripts: `scripts/predict_test.py` re-runs val + test from the training CSV (with metrics + age-bin reports); `scripts/predict_external.py` runs the trained model on a directory of raw `.nii.gz` files, replaying the training-time preprocessing on the fly.
-- The original `Classification` task and its associated models/losses/metrics have been removed.
+- A single `Classification` task with `subtask: 'multiclass' | 'multilabel'`, and a split `loss_fn` knob: `null` (Cross-Entropy / BCEWithLogits), `focal`, `weighted_focal`, `weighted_ce`, `topk10`.
+- Per-class balanced weights are computed on the train split and exposed by the datamodule; `weighted_focal` / `weighted_ce` pick them up automatically.
+- Self-contained configs: one `configs/train_*.yaml` per experiment with env + data + model + trainer inline — no Hydra `defaults:` composition.
+- Single-CSV split/fold/label format (`image_name`, `split`, `fold`, `label`) instead of separate `splits.json` + `labels.json` files.
+- Preprocessing sidecar: `scripts/preprocess_ct.py` / `scripts/preprocess_mri.py` write `preprocessing.json` next to `preprocessed_b2nd/`; `cli.py` snapshots it into each run's `Configs/` so `predict_external.py` can replay the same preprocessing on new NIfTI files.
+- Two inference scripts: `scripts/predict_test.py` re-runs val + test from the training CSV (with metrics + confusion matrix); `scripts/predict_external.py` runs the trained model on a directory of raw `.nii.gz` files.
 
 ## Documentation
 
@@ -19,7 +20,7 @@ The main differences from upstream:
 | MRI preprocessing — pipeline details | [docs/preprocessing-mri.md](docs/preprocessing-mri.md) |
 | Training configs — what each `train_*.yaml` does | [docs/training-configs.md](docs/training-configs.md) |
 | Adding your own dataset | [docs/custom-datasets.md](docs/custom-datasets.md) |
-| Task choice and loss function options | [docs/tasks-and-losses.md](docs/tasks-and-losses.md) |
+| Task / subtask / loss function options | [docs/tasks-and-losses.md](docs/tasks-and-losses.md) |
 | Output directory layout and run naming | [docs/output-layout.md](docs/output-layout.md) |
 | Inference — `predict_test.py` (held-out splits) & `predict_external.py` (raw NIfTI) | [docs/inference.md](docs/inference.md) |
 
@@ -139,39 +140,38 @@ If you forget the flag, `train.py` prints a friendly error listing the available
 
 | Config | Task | Notes |
 |---|---|---|
-| `train_age_ord_reg` | `Ordinal_Regression` (CORAL) | Template. Has `<placeholder>` paths to fill in — copy this for a new ordinal-regression experiment. |
-| `train_age_reg` | `Regression` (MSE) | Template for plain regression. |
+| `train_classification` | `Classification` | Template. Set `num_classes`, paths, `subtask`, `loss_fn`. Copy this for a new classification experiment. |
 
-See [docs/training-configs.md](docs/training-configs.md) for what each config sets up and when to pick which.
+See [docs/training-configs.md](docs/training-configs.md) for the config layout and which knobs matter when.
 
 ## Examples
 
-Fill in the placeholders in `train_age_ord_reg.yaml` (or copy it first), then:
+Fill in the placeholders in `train_classification.yaml` (or copy it first), then:
 
 ```bash
-python scripts/train.py --config-name=train_age_ord_reg
+python scripts/train.py --config-name=train_classification
 ```
 
-Override any key on the CLI without editing the file (single GPU, smaller LR, a different ordinal loss):
+Override any key on the CLI without editing the file (single GPU, weighted CE for class imbalance, smaller LR):
 
 ```bash
-python scripts/train.py --config-name=train_age_ord_reg \
+python scripts/train.py --config-name=train_classification \
     trainer.devices=1 \
     model.lr=5e-4 \
-    model.loss_fn=focal
+    model.loss_fn=weighted_ce
 ```
 
 Fine-tune from a checkpoint:
 
 ```bash
-python scripts/train.py --config-name=train_age_ord_reg \
+python scripts/train.py --config-name=train_classification \
     model.pretrained=True \
     model.chpt_path=/path/to/checkpoint.ckpt
 ```
 
 ## Adding a new experiment
 
-Copy an existing `configs/train_*.yaml` to `configs/train_<your_name>.yaml`, edit the placeholders (img_dir, csv_file, project, name), then `python scripts/train.py --config-name=train_<your_name>`. See [docs/custom-datasets.md](docs/custom-datasets.md) for the full workflow, and [docs/tasks-and-losses.md](docs/tasks-and-losses.md) for the `task` / `loss_fn` options. [docs/output-layout.md](docs/output-layout.md) explains where runs land on disk.
+Copy an existing `configs/train_*.yaml` to `configs/train_<your_name>.yaml`, edit the placeholders (`img_dir`, `csv_file`, `num_classes`, project, name), then `python scripts/train.py --config-name=train_<your_name>`. See [docs/custom-datasets.md](docs/custom-datasets.md) for the full workflow, and [docs/tasks-and-losses.md](docs/tasks-and-losses.md) for the `subtask` / `loss_fn` options. [docs/output-layout.md](docs/output-layout.md) explains where runs land on disk.
 
 For running inference on a trained model, see [docs/inference.md](docs/inference.md).
 

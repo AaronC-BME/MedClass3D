@@ -20,7 +20,7 @@ After all inputs are preprocessed, the temp dir is fed to the model's
 The temp `.b2nd` files are deleted at the end unless --keep-preprocessed is set.
 
 Output:
-    <pred_dir>/predictions.csv     -- columns: PatientID, Prediction
+    <pred_dir>/predictions.csv     -- columns: PatientID, Pred, Prob_0, Prob_1, ...
 
 Usage:
     python scripts/predict_external.py \\
@@ -80,16 +80,16 @@ def _select_best_ckpt(ckp_paths, prefer_best=True):
     if not prefer_best:
         return last[0] if last else (ckp_paths[0] if ckp_paths else None)
 
-    def _parse_mae(p):
+    def _parse_acc(p):
         try:
-            tag = str(p).split("Val_mae=")[1]
+            tag = str(p).split("Val_acc=")[1]
             return float(tag.split(".ckpt")[0])
         except (IndexError, ValueError):
-            return float("inf")
+            return float("-inf")
 
     if not_last:
-        not_last.sort(key=_parse_mae)
-        if _parse_mae(not_last[0]) != float("inf"):
+        not_last.sort(key=_parse_acc, reverse=True)
+        if _parse_acc(not_last[0]) != float("-inf"):
             return not_last[0]
 
     return last[0] if last else (ckp_paths[0] if ckp_paths else None)
@@ -231,10 +231,10 @@ def main():
                         help="Where to write predictions.csv. Default: <run-dir>/predictions_external/")
     parser.add_argument("--keep-preprocessed", action="store_true",
                         help="Keep the intermediate .b2nd files instead of deleting them at the end.")
-    parser.add_argument("--metrics", nargs="+", default=["mae", "mse"],
-                        help="Metric names forwarded to the model. Default: mae mse")
+    parser.add_argument("--metrics", nargs="+", default=["acc", "balanced_acc", "f1", "auroc"],
+                        help="Metric names forwarded to the model. Default: acc balanced_acc f1 auroc")
     parser.add_argument("--prefer-last", action="store_true",
-                        help="Use last.ckpt instead of the best-Val_MAE checkpoint.")
+                        help="Use last.ckpt instead of the best-Val_acc checkpoint.")
     args = parser.parse_args()
 
     make_omegaconf_resolvers()
@@ -349,16 +349,14 @@ def main():
         predictions = trainer.predict(model, dataloaders=loader)
         _, y_hats = zip(*predictions)
 
-        task = used_training_cfg.model.task
-        if task == "Ordinal_Regression":
-            # Model's forward returns (logits, probs) for ordinal heads.
-            probas = torch.cat([yh[1].detach().cpu() for yh in y_hats], dim=0)
-            preds = (probas > 0.5).sum(dim=1).float()
+        # Model emits [B, num_classes] logits; convert to probs + argmax.
+        logits = torch.cat([yh.detach().cpu() for yh in y_hats], dim=0)
+        subtask = used_training_cfg.model.get("subtask", "multiclass")
+        if subtask == "multilabel":
+            probs = torch.sigmoid(logits)
         else:
-            # Plain regression — y_hat is a single tensor of scalars.
-            preds = torch.cat(
-                [yh.detach().cpu().view(-1) for yh in y_hats], dim=0,
-            ).float()
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+        preds = probs.argmax(dim=1)
 
         if len(ok_ids) != len(preds):
             raise RuntimeError(
@@ -367,10 +365,13 @@ def main():
 
         # ---- Output CSV ---- #
         out_path = pred_dir / "predictions.csv"
-        pd.DataFrame({
+        df_data = {
             "PatientID": ok_ids,
-            "Prediction": preds.numpy(),
-        }).to_csv(out_path, index=False)
+            "Pred": preds.numpy(),
+        }
+        for i in range(probs.shape[-1]):
+            df_data[f"Prob_{i}"] = probs[:, i].numpy()
+        pd.DataFrame(df_data).to_csv(out_path, index=False)
         print(f"[done] wrote {len(ok_ids)} predictions to {out_path}")
 
     finally:
