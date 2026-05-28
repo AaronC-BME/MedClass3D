@@ -7,8 +7,6 @@ import torch.distributed as dist
 
 from medclass3d.training.trainer import BaseModel
 from medclass3d.models.heads.classification import ClassificationHead, ClassificationHead_MLP
-from medclass3d.models.heads.regression import RegressionHead
-from medclass3d.models.heads.ordinal_regression import OrdinalRegressionHead, OrdinalRegressionHead_MLP
 
 
 def get_first_valid_key(d, keys):
@@ -72,95 +70,6 @@ class ResEncoder(Module):
         x = self.res_unet.encoder(x).mean(dim=[2, 3, 4])
 
         return x
-
-
-class ResEncoder_Regressor(BaseModel):
-    """ResEncoder backbone with a plain regression head.
-
-    Use with ``task: 'Regression'``. By default the head emits a single scalar
-    per sample (output shape ``[B]``); set ``num_outputs`` in the model config
-    for multi-output regression.
-    """
-
-    def __init__(self, **hypparams):
-        super().__init__(**hypparams)
-
-        self.encoder = ResEncoder(**hypparams)
-
-        self.reg_head = RegressionHead(
-            embed_dim=320,
-            num_outputs=hypparams.get("num_outputs", 1),
-            dropout=hypparams.get("regression_head_dropout", 0.1),
-            patch_aggregation_method=hypparams.get("token_aggregation_method", "avg"),
-            cls_token_available=False,
-        )
-
-        # Optionally restore reg_head weights from a checkpoint that was saved
-        # with the same head shape.
-        if hypparams.get("pretrained", False):
-            ckpt = torch.load(hypparams["chpt_path"], map_location="cpu")
-            state_dict = ckpt.get("state_dict", ckpt)
-
-            for name, param in state_dict.items():
-                if name.startswith("reg_head") and name in self.state_dict():
-                    if self.state_dict()[name].shape == param.shape:
-                        self.state_dict()[name].copy_(param)
-
-    def forward(self, x):
-        x = self.encoder(x)
-        return self.reg_head(x)
-
-
-class ResEncoder_OrdinalRegressor(BaseModel):
-    def __init__(self, **hypparams):
-        super().__init__(**hypparams)
-
-        self.encoder = ResEncoder(**hypparams)
-
-        # Number of ordinal thresholds is (num_classes - 1)
-        self.reg_head = OrdinalRegressionHead(
-            embed_dim=320,
-            num_classes=hypparams["num_classes"],
-            dropout=hypparams.get("regression_head_dropout", 0.1),
-            patch_aggregation_method=hypparams.get("token_aggregation_method", "avg"),
-            cls_token_available=False,
-        )
-
-        # Only load reg_head if weights are available
-        if hypparams.get("pretrained", False):
-            ckpt = torch.load(hypparams["chpt_path"], map_location="cpu")
-            state_dict = ckpt.get("state_dict", ckpt)
-
-            for name, param in state_dict.items():
-                if name.startswith("reg_head") and name in self.state_dict():
-                    if self.state_dict()[name].shape == param.shape:
-                        self.state_dict()[name].copy_(param)
-
-    def forward(self, x):
-        x = self.encoder(x)
-        logits, probas = self.reg_head(x)
-        return logits, probas
-
-
-class ResEncoder_OrdinalRegressor_MLP(BaseModel):
-    def __init__(self, **hypparams):
-        super().__init__(**hypparams)
-
-        self.encoder = ResEncoder(**hypparams)
-
-        # Number of ordinal thresholds is (num_classes - 1)
-        self.reg_head = OrdinalRegressionHead_MLP(
-            embed_dim=320,
-            num_classes=hypparams["num_classes"],
-            dropout=hypparams.get("regression_head_dropout", 0.1),
-            patch_aggregation_method=hypparams.get("token_aggregation_method", "avg"),
-            cls_token_available=False,
-        )
-
-    def forward(self, x):
-        x = self.encoder(x)
-        logits, probas = self.reg_head(x)
-        return logits, probas
 
 
 class ResEncoder_Classifier(BaseModel):

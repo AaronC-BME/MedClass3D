@@ -12,7 +12,22 @@ from .balanced_sampler import make_k_class_balanced_trainloader
 from medclass3d.utils.io import Blosc2IO
 
 
-class AgeReg_Data(Dataset):
+class Class_Data(Dataset):
+    """Image classification dataset driven by a single CSV.
+
+    The CSV must contain these columns:
+        - image_name : subject/image identifier (matches folder name on disk)
+        - split      : one of 'train', 'val', 'test'
+        - fold       : integer fold index (0, 1, 2, ...)
+        - <label>    : integer class index (column name configurable via
+                       ``label_column``)
+
+    Labels are emitted as ``torch.long``. Balanced class_weights are computed
+    on the ``train`` split and exposed via ``self.class_weights``; the trainer
+    picks them up in ``setup()`` to finalize weighted CE / weighted focal
+    criteria.
+    """
+
     def __init__(
         self,
         img_dir,
@@ -22,29 +37,11 @@ class AgeReg_Data(Dataset):
         label_column="label",
         transform=None,
         train=True,
-        task="Regression",
     ):
         super().__init__()
-        """
-        Image dataset driven by a single CSV.
-
-        The CSV must contain these columns:
-            - image_name : subject/image identifier (matches folder name on disk)
-            - split      : one of 'train', 'val', 'test'
-            - fold       : integer fold index (0, 1, 2, ...)
-            - <label>    : float label for regression / ordinal regression
-                           (rounded to int internally), or integer class index
-                           for classification. Column name configurable via
-                           `label_column`.
-
-        For ``task="Classification"``, labels are emitted as ``torch.long``
-        without rounding, and balanced class_weights are computed on the
-        ``train`` split.
-        """
         self.img_dir = Path(img_dir)
         self.train = train
         self.transform = transform
-        self.task = task
 
         df = pd.read_csv(csv_file)
 
@@ -81,19 +78,11 @@ class AgeReg_Data(Dataset):
             )
 
         self.img_files = subset["image_name"].astype(str).tolist()
-
-        if task == "Classification":
-            int_labels = subset[label_column].astype(int).to_numpy()
-            self.labels = torch.tensor(int_labels, dtype=torch.long)
-            self.class_weights = (
-                self._compute_class_weights(int_labels) if split_norm == "train" else None
-            )
-        else:
-            # Round float labels to ints for ordinal regression / keep float for plain regression
-            raw_labels = subset[label_column].astype(float).to_numpy()
-            rounded = raw_labels.round().astype(int)
-            self.labels = torch.tensor(rounded, dtype=torch.float)
-            self.class_weights = None
+        int_labels = subset[label_column].astype(int).to_numpy()
+        self.labels = torch.tensor(int_labels, dtype=torch.long)
+        self.class_weights = (
+            self._compute_class_weights(int_labels) if split_norm == "train" else None
+        )
 
         # Optional: verify files exist up front so failures surface at setup, not mid-epoch
         missing_files = [
@@ -146,13 +135,12 @@ class AgeReg_Data(Dataset):
         return len(self.img_files)
 
 
-class AgeReg_DataModule(BaseDataModule):
+class Class_DataModule(BaseDataModule):
     def __init__(
         self,
         img_dir,
         csv_file,
         label_column="label",
-        task="Regression",
         use_balanced_sampling=False,
         **params,
     ):
@@ -160,15 +148,14 @@ class AgeReg_DataModule(BaseDataModule):
         self.img_dir = img_dir
         self.csv_file = csv_file
         self.label_column = label_column
-        self.task = task
         self.use_balanced_sampling = use_balanced_sampling
 
     @property
     def class_weights(self):
         """Per-class weights computed on the train split.
 
-        Available only after ``setup()`` runs and only for classification tasks.
-        Used by trainer.setup() to finalize weighted CE / weighted focal losses.
+        Available only after ``setup()`` runs. Used by trainer.setup() to
+        finalize weighted CE / weighted focal losses.
         """
         return getattr(self.train_dataset, "class_weights", None) if hasattr(self, "train_dataset") else None
 
@@ -178,7 +165,6 @@ class AgeReg_DataModule(BaseDataModule):
             csv_file=self.csv_file,
             label_column=self.label_column,
             fold=self.fold,
-            task=self.task,
         )
 
         # Peek at the CSV once to find which splits actually exist for this
@@ -190,20 +176,20 @@ class AgeReg_DataModule(BaseDataModule):
         available = set(df[df["fold"] == int(self.fold)]["split"].unique())
 
         if "train" in available:
-            self.train_dataset = AgeReg_Data(
+            self.train_dataset = Class_Data(
                 **common,
                 split="train",
                 transform=self.train_transforms,
             )
         if "val" in available:
-            self.val_dataset = AgeReg_Data(
+            self.val_dataset = Class_Data(
                 **common,
                 split="val",
                 transform=self.test_transforms,
                 train=False,
             )
         if "test" in available:
-            self.test_dataset = AgeReg_Data(
+            self.test_dataset = Class_Data(
                 **common,
                 split="test",
                 transform=self.test_transforms,
@@ -212,11 +198,6 @@ class AgeReg_DataModule(BaseDataModule):
 
     def train_dataloader(self):
         if self.use_balanced_sampling:
-            if self.task != "Classification":
-                raise ValueError(
-                    "use_balanced_sampling=True only makes sense with "
-                    f"task='Classification', got task={self.task!r}."
-                )
             print("Using KClassBalancedBatchSampler for training")
             return make_k_class_balanced_trainloader(
                 dataset=self.train_dataset,

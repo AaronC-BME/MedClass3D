@@ -3,22 +3,11 @@ from torchmetrics import (
     Accuracy,
     AveragePrecision,
     F1Score,
-    MeanAbsoluteError,
-    MeanSquaredError,
     Precision,
     Recall,
 )
 
 from medclass3d.evaluation.balanced_accuracy import BalancedAccuracy
-
-
-def _build_regression_metrics(metrics_list):
-    out = {}
-    if "mse" in metrics_list:
-        out["MSE"] = MeanSquaredError()
-    if "mae" in metrics_list:
-        out["MAE"] = MeanAbsoluteError()
-    return out
 
 
 def _build_classification_metrics(metrics_list, num_classes, subtask="multiclass"):

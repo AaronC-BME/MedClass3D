@@ -53,7 +53,7 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from medclass3d.data.datamodules import AgeReg_Data
+from medclass3d.data.datamodules import Class_Data
 from medclass3d.data.preprocessing.blosc_helper import (
     comp_blosc2_params,
     save_case,
@@ -328,7 +328,7 @@ def main():
         batch_size = int(used_training_cfg.data.module.batch_size)
         num_workers = int(used_training_cfg.data.module.get("num_workers", 4))
 
-        predict_ds = AgeReg_Data(
+        predict_ds = Class_Data(
             img_dir=str(b2nd_dir),
             csv_file=str(manifest_path),
             split="test",

@@ -35,12 +35,11 @@ metrics:
 # ============================================================================
 data:
   module:
-    _target_: medclass3d.data.datamodules.AgeReg_DataModule
+    _target_: medclass3d.data.datamodules.Class_DataModule
     name: Classification
     img_dir: <path_to_dataset>/preprocessed_b2nd   # points at the .b2nd files; preprocessing.json sits one level up
     csv_file: <path_to_csv_file>
     label_column: label
-    task: ${model.task}                            # so dataset emits Long labels and computes class_weights
     use_balanced_sampling: False                   # KClassBalancedBatchSampler for imbalanced classes
     batch_size: 4
     num_workers: 12

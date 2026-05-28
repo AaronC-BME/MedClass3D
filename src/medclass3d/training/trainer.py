@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 import lightning as L
@@ -10,18 +9,13 @@ from torchmetrics.aggregation import CatMetric
 
 from medclass3d.data.mixup import mixup_criterion, mixup_data
 from medclass3d.evaluation.conf_mat import ConfusionMatrix
-from medclass3d.evaluation.metrics import (
-    _build_classification_metrics,
-    _build_regression_metrics,
-)
+from medclass3d.evaluation.metrics import _build_classification_metrics
 from medclass3d.models.losses import (
     CLASSIFICATION_LOSSES_NEEDING_WEIGHTS,
     VALID_TASKS,
     FocalLoss,
     WeightedCrossEntropyLoss,
     _build_criterion,
-    coral_loss,
-    label_to_levels,
 )
 from medclass3d.training.optim import (
     CosineAnnealingLR_DoubleWarmstart,
@@ -73,9 +67,9 @@ class BaseModel(L.LightningModule):
                 f"Unknown task: {task!r}. Expected one of {VALID_TASKS}."
             )
         self.task = task
-        self.loss_fn = loss_fn  # None => task default
+        self.loss_fn = loss_fn  # None => CE / BCEWithLogits per subtask
         self.subtask = kwargs.get("subtask", "multiclass")
-        if task == "Classification" and self.subtask not in ("multiclass", "multilabel"):
+        if self.subtask not in ("multiclass", "multilabel"):
             raise ValueError(
                 f"Unknown subtask: {self.subtask!r}. Expected 'multiclass' or 'multilabel'."
             )
@@ -84,27 +78,15 @@ class BaseModel(L.LightningModule):
         self.metric_computation_mode = metric_computation_mode
         self.result_plot_setting = result_plot
 
-        if task == "Classification":
-            metrics_dict = _build_classification_metrics(
-                metrics, num_classes=num_classes, subtask=self.subtask,
-            )
-        else:
-            metrics_dict = _build_regression_metrics(metrics)
+        metrics_dict = _build_classification_metrics(
+            metrics, num_classes=num_classes, subtask=self.subtask,
+        )
 
-        # Result-plotting bookkeeping — confusion matrix for classification,
-        # pred/label scatter lists for regression / ordinal.
+        # Confusion matrix bookkeeping (always on for classification).
         if self.result_plot_setting in ("val", "all"):
-            if task == "Classification":
-                self.val_conf_mat = ConfusionMatrix(num_classes=num_classes)
-            else:
-                self.val_pred_list = []
-                self.val_label_list = []
+            self.val_conf_mat = ConfusionMatrix(num_classes=num_classes)
         if self.result_plot_setting == "all":
-            if task == "Classification":
-                self.train_conf_mat = ConfusionMatrix(num_classes=num_classes)
-            else:
-                self.train_pred_list = []
-                self.train_label_list = []
+            self.train_conf_mat = ConfusionMatrix(num_classes=num_classes)
 
         self.save_preds = bool(kwargs["save_preds"])
         if self.save_preds:
@@ -170,23 +152,14 @@ class BaseModel(L.LightningModule):
         pass
 
     def setup(self, stage=None):
-        # Ordinal Regression Weighted BCE pulls per-level weights at setup time.
-        self.level_weights = None
-        if self.loss_fn == "weighted_bce":
-            print("Setting up level weights for Ordinal Regression Weighted BCE")
-            self.level_weights = self.trainer.datamodule.level_weights.to(self.device)
-
-        # Classification losses that need class_weights are instantiated here.
-        if (
-            self.task == "Classification"
-            and self.loss_fn in CLASSIFICATION_LOSSES_NEEDING_WEIGHTS
-        ):
+        # Classification losses that need class_weights are instantiated here,
+        # after the datamodule has computed them on the train split.
+        if self.loss_fn in CLASSIFICATION_LOSSES_NEEDING_WEIGHTS:
             class_weights = getattr(self.trainer.datamodule, "class_weights", None)
             if class_weights is None:
                 raise RuntimeError(
                     f"loss_fn={self.loss_fn!r} requires datamodule.class_weights, "
-                    "but the datamodule did not expose any. Make sure "
-                    "task='Classification' is set on the datamodule too."
+                    "but the datamodule did not expose any."
                 )
             class_weights = class_weights.to(self.device)
             if self.loss_fn == "weighted_ce":
@@ -202,54 +175,18 @@ class BaseModel(L.LightningModule):
     # Step helpers
     # -----------------------------------------------------------------------
 
-    @property
-    def _is_ordinal(self):
-        return self.task == "Ordinal_Regression"
-
-    @property
-    def _is_classification(self):
-        return self.task == "Classification"
-
-    def _forward_logits(self, x):
-        """Run forward and return logits only (handles tuple-returning ordinal heads)."""
-        out = self(x)
-        if self._is_ordinal and isinstance(out, tuple):
-            return out[0]
-        return out
-
     def _compute_loss(self, y_hat, y):
         """Standard (non-mixup, non-SAM) loss given logits and labels."""
-        if self._is_ordinal:
-            levels = label_to_levels(y, self.num_classes)
-            if self.loss_fn == "bce_mae":
-                return self.criterion(
-                    y_hat, levels, y, importance_weights=self.level_weights
-                )
-            if self.loss_fn == "weighted_bce":
-                return self.criterion(
-                    y_hat, levels, importance_weights=self.level_weights
-                )
-            return self.criterion(y_hat, levels)
-
-        if self._is_classification:
-            if self.subtask == "multilabel":
-                return self.criterion(y_hat, y.float())
-            return self.criterion(y_hat, y.long())
-
-        return self.criterion(y_hat, y.float())
+        if self.subtask == "multilabel":
+            return self.criterion(y_hat, y.float())
+        return self.criterion(y_hat, y.long())
 
     def _update_metrics(self, metrics_obj, y_hat, y):
         """Update an epochwise MetricCollection with predictions in the right form."""
-        if self._is_ordinal:
-            pred_classes = (torch.sigmoid(y_hat.detach()) > 0.5).int().sum(dim=1)
-            metrics_obj.update(pred_classes, y)
-        elif self._is_classification:
-            if self.subtask == "multilabel":
-                metrics_obj.update(torch.sigmoid(y_hat.detach()), y)
-            else:
-                metrics_obj.update(F.softmax(y_hat.detach(), dim=-1), y)
+        if self.subtask == "multilabel":
+            metrics_obj.update(torch.sigmoid(y_hat.detach()), y)
         else:
-            metrics_obj.update(y_hat.view(-1).detach(), y.view(-1))
+            metrics_obj.update(F.softmax(y_hat.detach(), dim=-1), y)
 
     @staticmethod
     def _explode_f1_per_class(metrics_res, prefix):
@@ -292,8 +229,8 @@ class BaseModel(L.LightningModule):
             inputs, targets_a, targets_b, lam = mixup_data(x, y, alpha=self.mixup_alpha)
             y_hat = self(inputs)
         else:
-            y_hat = self._forward_logits(x)
-            if (not self._is_ordinal) and self.num_classes == 1:
+            y_hat = self(x)
+            if self.num_classes == 1:
                 y_hat = y_hat.view(-1)
 
         # Edge case: batch size 1 with squeezed batch dim
@@ -344,12 +281,8 @@ class BaseModel(L.LightningModule):
         elif self.metric_computation_mode == "epochwise":
             self._update_metrics(self.train_metrics, y_hat, y)
 
-        # Optional plot bookkeeping
         if hasattr(self, "train_conf_mat"):
             self.train_conf_mat.update(y_hat, y)
-        if hasattr(self, "train_pred_list"):
-            self.train_pred_list.extend(y_hat)
-            self.train_label_list.extend(y)
 
         return loss
 
@@ -360,7 +293,7 @@ class BaseModel(L.LightningModule):
     def validation_step(self, batch, batch_idx):
         x, y = batch
 
-        y_hat = self._forward_logits(x)
+        y_hat = self(x)
         if self.num_classes == 1:
             y_hat = y_hat.view(-1)
 
@@ -405,60 +338,29 @@ class BaseModel(L.LightningModule):
     # -----------------------------------------------------------------------
 
     def _log_val_predictions_table(self, preds_all, labels_all):
-        """Log per-sample prediction table to W&B based on task type."""
-        if self.task == "Regression":
-            data = [[x.item(), y.item()] for x, y in zip(labels_all, preds_all)]
-            table = wandb.Table(data=data, columns=["GT", "Pred"])
-            wandb.log({"Val Predictions": table})
+        """Log a per-sample W&B prediction table.
 
-        elif self._is_ordinal:
-            binary_preds = (torch.sigmoid(preds_all) > 0.5).int()
-            expected_ages = binary_preds.sum(dim=1)
-            data = [[x.item(), y.item()] for x, y in zip(labels_all, expected_ages)]
-            table = wandb.Table(data=data, columns=["GT", "Pred"])
-            wandb.log({"Val Predictions": table})
+        One GT column for multiclass / one per label for multilabel; per-class
+        probability columns (softmax for multiclass, sigmoid for multilabel).
+        """
+        n_classes = preds_all.shape[-1]
+        pred_cols = [f"Prob_{i}" for i in range(n_classes)]
 
-        elif self._is_classification:
-            # One GT column for multiclass, one per label for multilabel; per-class
-            # probability columns (softmax for multiclass, sigmoid for multilabel).
-            n_classes = preds_all.shape[-1]
-            if self.subtask == "multilabel":
-                gt_cols = [f"GT_{i}" for i in range(labels_all.shape[-1])]
-                pred_cols = [f"Prob_{i}" for i in range(n_classes)]
-                rows = [
-                    x.tolist() + torch.sigmoid(y).tolist()
-                    for x, y in zip(labels_all, preds_all)
-                ]
-            else:
-                gt_cols = ["GT"]
-                pred_cols = [f"Prob_{i}" for i in range(n_classes)]
-                rows = [
-                    [int(x.item())] + F.softmax(y, dim=-1).tolist()
-                    for x, y in zip(labels_all, preds_all)
-                ]
-            table = wandb.Table(data=rows, columns=gt_cols + pred_cols)
-            wandb.log({"Val Predictions": table})
-
+        if self.subtask == "multilabel":
+            gt_cols = [f"GT_{i}" for i in range(labels_all.shape[-1])]
+            rows = [
+                x.tolist() + torch.sigmoid(y).tolist()
+                for x, y in zip(labels_all, preds_all)
+            ]
         else:
-            raise NotImplementedError
+            gt_cols = ["GT"]
+            rows = [
+                [int(x.item())] + F.softmax(y, dim=-1).tolist()
+                for x, y in zip(labels_all, preds_all)
+            ]
 
-    def _log_val_scatterplot(self, preds_all, labels_all):
-        """Scatterplot of GT vs prediction for Regression / Ordinal Regression."""
-        if self.task == "Regression":
-            data = [[x, y] for (x, y) in zip(labels_all, preds_all)]
-        elif self._is_ordinal:
-            binary_preds = (torch.sigmoid(preds_all) > 0.5).int()
-            expected_ages = binary_preds.sum(dim=1)
-            data = [[x, y] for (x, y) in zip(labels_all, expected_ages)]
-        else:
-            return
-
-        table = wandb.Table(data=data, columns=["Ground Truth", "Prediction"])
-        wandb.log({
-            "Val Scatterplot": wandb.plot.scatter(
-                table, "Ground Truth", "Prediction", "Validation Scatterplot",
-            )
-        })
+        table = wandb.Table(data=rows, columns=gt_cols + pred_cols)
+        wandb.log({"Val Predictions": table})
 
     def on_validation_epoch_end(self) -> None:
         if self.metric_computation_mode == "epochwise":
@@ -480,8 +382,6 @@ class BaseModel(L.LightningModule):
                 sorted_idx = torch.argsort(indices)
                 preds_all = preds_all[sorted_idx]
                 labels_all = labels_all[sorted_idx]
-
-                self._log_val_scatterplot(preds_all, labels_all)
 
                 if self.save_preds:
                     self._log_val_predictions_table(preds_all, labels_all)
@@ -510,19 +410,6 @@ class BaseModel(L.LightningModule):
             self.train_conf_mat.save_state(self.trainer, "train")
             self.train_conf_mat.reset()
 
-        if hasattr(self, "train_pred_list"):
-            data = [
-                [x, y] for (x, y) in zip(self.train_label_list, self.train_pred_list)
-            ]
-            table = wandb.Table(data=data, columns=["Ground Truth", "Prediction"])
-            wandb.log({
-                "Train Scatterplot": wandb.plot.scatter(
-                    table, "Ground Truth", "Prediction", "Train Scatterplot",
-                )
-            })
-            self.train_pred_list = []
-            self.train_label_list = []
-
     # -----------------------------------------------------------------------
     # Init from scratch (when not pretrained)
     # -----------------------------------------------------------------------
@@ -550,19 +437,14 @@ class BaseModel(L.LightningModule):
     # -----------------------------------------------------------------------
 
     def _split_params_for_sawtooth(self):
-        """Group named params into encoder vs head (cls_head or reg_head)."""
-        encoder_params, cls_head_params, reg_head_params = [], [], []
+        """Group named params into encoder vs cls_head."""
+        encoder_params, cls_head_params = [], []
         for name, param in self.named_parameters():
             if "encoder" in name:
                 encoder_params.append(param)
             elif "cls_head" in name:
                 cls_head_params.append(param)
-            elif "reg_head" in name:
-                reg_head_params.append(param)
-
-        if cls_head_params:
-            return encoder_params, cls_head_params, "cls_head"
-        return encoder_params, reg_head_params, "reg_head"
+        return encoder_params, cls_head_params, "cls_head"
 
     def _build_param_groups(self):
         """Param groups: plain iterable, or list of dicts for sawtooth fine-tuning."""

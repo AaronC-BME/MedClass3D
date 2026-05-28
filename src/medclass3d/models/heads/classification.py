@@ -40,8 +40,10 @@ class ClassificationHead(nn.Module):
 
 
 class ClassificationHead_MLP(nn.Module):
-    """MLP variant of :class:`ClassificationHead`, mirroring the head structure
-    in :class:`medclass3d.models.heads.regression.RegressionHead_MLP`."""
+    """MLP variant of :class:`ClassificationHead`.
+
+    Two-layer MLP (256 → 128 → num_classes) with dropout between each layer.
+    """
 
     def __init__(
         self,
