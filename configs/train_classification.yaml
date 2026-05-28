@@ -1,0 +1,171 @@
+# =============================================================================
+# Self-contained training config — Classification.
+#
+# Launch:
+#   python scripts/train.py --config-name=train_classification
+#
+# Knobs worth flipping for common use cases:
+#   - model.subtask   : 'multiclass' (default) | 'multilabel'
+#   - model.loss_fn   : null=CE | 'focal' | 'weighted_focal' | 'weighted_ce' | 'topk10'
+#   - data.module.use_balanced_sampling : True/False (KClassBalancedBatchSampler)
+# =============================================================================
+
+# ---- Output ----------------------------------------------------------------
+output_dir: ${oc.env:EXPERIMENT_LOCATION,"<path_to_output>"}
+output_subdir: ${output_dir}/${data.module.name}/${trainer.logger.name}/Configs
+hydra:
+  output_subdir: ${output_subdir}
+  job:
+    chdir: False
+  run:
+    dir: .
+
+# ---- Run misc --------------------------------------------------------------
+seed: False
+val_only: False
+
+metrics:
+  - 'acc'
+  - 'balanced_acc'
+  - 'f1'
+  - 'auroc'
+
+# ============================================================================
+# Data
+# ============================================================================
+data:
+  module:
+    _target_: medclass3d.data.datamodules.AgeReg_DataModule
+    name: Classification
+    img_dir: <path_to_dataset>/preprocessed_b2nd   # points at the .b2nd files; preprocessing.json sits one level up
+    csv_file: <path_to_csv_file>
+    label_column: label
+    task: ${model.task}                            # so dataset emits Long labels and computes class_weights
+    use_balanced_sampling: False                   # KClassBalancedBatchSampler for imbalanced classes
+    batch_size: 4
+    num_workers: 12
+    random_batches: False
+    prepare_data_per_node: False
+    fold: null
+
+    train_transforms:
+      _target_: medclass3d.data.batchgenerators_transforms.get_training_transforms
+      patch_size: ${data.patch_size}
+      rotation_for_DA: 0.523599
+      mirror_axes: [0, 1, 2]
+      do_dummy_2d_data_aug: False
+    test_transforms:
+      _target_: medclass3d.data.batchgenerators_transforms.get_test_transforms
+      patch_size: ${data.patch_size}
+      do_dummy_2d_data_aug: False
+
+  cv:
+    k: 5
+  num_classes: 2                        # set to the number of classes in your dataset
+  patch_size: [160, 160, 160]
+
+# ============================================================================
+# Model
+# ============================================================================
+model:
+  _target_: medclass3d.models.backbones.resenc.ResEncoder_Classifier
+  name: ${model_name_extractor:${model._target_}}
+
+  task: 'Classification'
+  subtask: 'multiclass'                 # 'multiclass' | 'multilabel'
+  loss_fn: null                         # null=CE | 'focal' | 'weighted_focal' | 'weighted_ce' | 'topk10'
+
+  input_dim: 3
+  input_channels: 1
+  input_shape: ${data.patch_size}
+  num_classes: ${data.num_classes}
+  cifar_size: False
+
+  pretrained: False
+  chpt_path: null
+
+  classification_head_dropout: 0.2
+  finetune_method: full_sawtooth
+  token_aggregation_method: null
+
+  optimizer: AdamW
+  lr: 0.001
+  weight_decay: 1e-2
+  nesterov: False
+  sam: False
+  adaptive_sam: False
+  undecay_norm: False
+
+  scheduler: CosineAnneal
+  T_max: ${trainer.max_epochs}
+  warmstart: 0
+  warmstart2: 0
+  epochs: ${trainer.max_epochs}
+
+  mixup: False
+  mixup_alpha: 0.2
+  label_smoothing: 0.0
+  stochastic_depth: False
+  resnet_dropout: 0.0
+  squeeze_excitation: False
+  apply_shakedrop: False
+  zero_init_residual: False
+
+  metric_computation_mode: 'epochwise'
+  result_plot: 'val'
+  metrics: ${metrics}
+  save_preds: True
+
+  compile: False
+
+# ============================================================================
+# Trainer
+# ============================================================================
+trainer:
+  _target_: lightning.pytorch.Trainer
+
+  devices: 1
+  accelerator: 'gpu'
+  strategy: 'auto'
+  precision: '16-mixed'
+  sync_batchnorm: True
+  benchmark: True
+  deterministic: False
+
+  max_epochs: 200
+  accumulate_grad_batches: 48
+  num_sanity_val_steps: 0
+  log_every_n_steps: 50
+
+  enable_progress_bar: True
+  enable_checkpointing: True
+
+  callbacks:
+    progressbar:
+      _target_: lightning.pytorch.callbacks.TQDMProgressBar
+    lr_monitor:
+      _target_: lightning.pytorch.callbacks.LearningRateMonitor
+      logging_interval: epoch
+    early_stopping:
+      _target_: lightning.pytorch.callbacks.EarlyStopping
+      monitor: 'Val/loss'
+      mode: 'min'
+      patience: 50
+      check_finite: True
+    checkpoint:
+      _target_: lightning.pytorch.callbacks.ModelCheckpoint
+      dirpath: ???
+      filename: 'epoch{epoch}-Val_loss={Val/loss:.2f}-Val_acc={Val/Accuracy:.3f}'
+      auto_insert_metric_name: False
+      monitor: 'Val/Accuracy'
+      mode: 'max'
+      save_top_k: 3
+      save_last: false
+      save_weights_only: false
+
+  logger:
+    _target_: lightning.pytorch.loggers.WandbLogger
+    save_dir: ${output_dir}/${data.module.name}
+    offline: False
+    project: <wandb_project_name>
+    name: <wandb_run_name>

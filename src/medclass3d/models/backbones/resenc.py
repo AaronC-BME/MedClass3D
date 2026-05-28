@@ -6,6 +6,7 @@ from torch._dynamo import OptimizedModule
 import torch.distributed as dist
 
 from medclass3d.training.trainer import BaseModel
+from medclass3d.models.heads.classification import ClassificationHead, ClassificationHead_MLP
 from medclass3d.models.heads.regression import RegressionHead
 from medclass3d.models.heads.ordinal_regression import OrdinalRegressionHead, OrdinalRegressionHead_MLP
 
@@ -160,6 +161,63 @@ class ResEncoder_OrdinalRegressor_MLP(BaseModel):
         x = self.encoder(x)
         logits, probas = self.reg_head(x)
         return logits, probas
+
+
+class ResEncoder_Classifier(BaseModel):
+    """ResEncoder backbone with a linear classification head.
+
+    Use with ``task: 'Classification'``. Output shape is ``[B, num_classes]``
+    logits; the trainer applies softmax (multiclass) or sigmoid (multilabel)
+    before computing metrics.
+    """
+
+    def __init__(self, **hypparams):
+        super().__init__(**hypparams)
+
+        self.encoder = ResEncoder(**hypparams)
+
+        self.cls_head = ClassificationHead(
+            embed_dim=320,
+            num_classes=hypparams["num_classes"],
+            dropout=hypparams.get("classification_head_dropout", 0.1),
+            patch_aggregation_method=hypparams.get("token_aggregation_method", None),
+            cls_token_available=False,
+        )
+
+        # Optionally restore cls_head weights from a checkpoint that was saved
+        # with the same head shape.
+        if hypparams.get("pretrained", False):
+            ckpt = torch.load(hypparams["chpt_path"], map_location="cpu")
+            state_dict = ckpt.get("state_dict", ckpt)
+            for name, param in state_dict.items():
+                if name.startswith("cls_head") and name in self.state_dict():
+                    if self.state_dict()[name].shape == param.shape:
+                        self.state_dict()[name].copy_(param)
+
+    def forward(self, x):
+        x = self.encoder(x)
+        return self.cls_head(x)
+
+
+class ResEncoder_Classifier_MLP(BaseModel):
+    """MLP-head variant of :class:`ResEncoder_Classifier`."""
+
+    def __init__(self, **hypparams):
+        super().__init__(**hypparams)
+
+        self.encoder = ResEncoder(**hypparams)
+
+        self.cls_head = ClassificationHead_MLP(
+            embed_dim=320,
+            num_classes=hypparams["num_classes"],
+            dropout=hypparams.get("classification_head_dropout", 0.1),
+            patch_aggregation_method=hypparams.get("token_aggregation_method", None),
+            cls_token_available=False,
+        )
+
+    def forward(self, x):
+        x = self.encoder(x)
+        return self.cls_head(x)
 
 
 def load_pretrained_weights(
