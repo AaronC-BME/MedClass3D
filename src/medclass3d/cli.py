@@ -11,7 +11,7 @@ from hydra.utils import instantiate
 from lightning.pytorch import seed_everything
 from omegaconf import OmegaConf
 
-from medregression3d.utils.parsing import make_omegaconf_resolvers
+from medclass3d.utils.parsing import make_omegaconf_resolvers
 
 
 def _prepare_cfg(cfg):
@@ -182,7 +182,7 @@ def _hydra_main(cfg):
 
 
 def main():
-    """Entry point used by both ``scripts/train.py`` and the ``medreg-train``
+    """Entry point used by both ``scripts/train.py`` and the ``medclass-train``
     console script. Sets up env vars + OmegaConf resolvers, checks for
     ``--config-name``, and delegates to the Hydra-wrapped runner."""
     os.environ["WANDB__SERVICE_WAIT"] = "300"

@@ -62,10 +62,10 @@ import numpy as np
 import SimpleITK as sitk
 from tqdm import tqdm
 
-from medregression3d.data.preprocessing.cropping import crop_to_nonzero
-from medregression3d.data.preprocessing.normalization import CTNormalization
-from medregression3d.data.preprocessing.blosc_helper import save_case, comp_blosc2_params
-from medregression3d.data.preprocessing.default_resampling import resample_data_or_seg_to_spacing
+from medclass3d.data.preprocessing.cropping import crop_to_nonzero
+from medclass3d.data.preprocessing.normalization import CTNormalization
+from medclass3d.data.preprocessing.blosc_helper import save_case, comp_blosc2_params
+from medclass3d.data.preprocessing.default_resampling import resample_data_or_seg_to_spacing
 
 # CT-specific: voxels above this HU threshold count as foreground (tissue).
 # Air -1000, lung parenchyma -800, fat -100, water 0, soft tissue +30 to +60,

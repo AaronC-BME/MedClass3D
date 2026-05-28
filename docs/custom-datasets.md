@@ -24,7 +24,7 @@ If your dataset can be described as "a directory of preprocessed `.b2nd` files p
    ```yaml
    data:
      module:
-       _target_: medregression3d.data.datamodules.AgeReg_DataModule
+       _target_: medclass3d.data.datamodules.AgeReg_DataModule
        name: YourDatasetName
        img_dir: /path/to/<out-root>/preprocessed_b2nd   # points at the b2nd files
        csv_file: /path/to/splits_labels.csv
@@ -52,7 +52,7 @@ If your dataset can be described as "a directory of preprocessed `.b2nd` files p
    Or the installed console script:
 
    ```bash
-   medreg-train --config-name=train_<your_name>
+   medclass-train --config-name=train_<your_name>
    ```
 
    Any key can be overridden on the CLI for quick experiments:
@@ -73,4 +73,4 @@ Write a new `DataModule` only if your data doesn't fit the `AgeReg_DataModule` p
 - **Non-standard label structure** (e.g., multi-label classification, segmentation targets, censored survival times).
 - **A different file format** than `.b2nd`.
 
-In that case, mirror [`src/medregression3d/data/datamodules.py`](../src/medregression3d/data/datamodules.py) as a starting point: subclass `BaseDataModule`, accept your paths via `__init__`, and instantiate your `Dataset` in `setup()`. Then point your config's `data.module._target_` at your new class.
+In that case, mirror [`src/medclass3d/data/datamodules.py`](../src/medclass3d/data/datamodules.py) as a starting point: subclass `BaseDataModule`, accept your paths via `__init__`, and instantiate your `Dataset` in `setup()`. Then point your config's `data.module._target_` at your new class.

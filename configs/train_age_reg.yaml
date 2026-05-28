@@ -35,7 +35,7 @@ metrics:
 # ============================================================================
 data:
   module:
-    _target_: medregression3d.data.datamodules.AgeReg_DataModule
+    _target_: medclass3d.data.datamodules.AgeReg_DataModule
     name: AgeRegression
     img_dir: <path_to_dataset>/preprocessed_b2nd   # points at the .b2nd files; preprocessing.json sits one level up
     csv_file: <path_to_csv_file>
@@ -47,13 +47,13 @@ data:
     fold: null
 
     train_transforms:
-      _target_: medregression3d.data.batchgenerators_transforms.get_training_transforms
+      _target_: medclass3d.data.batchgenerators_transforms.get_training_transforms
       patch_size: ${data.patch_size}
       rotation_for_DA: 0.523599
       mirror_axes: [0, 1, 2]
       do_dummy_2d_data_aug: False
     test_transforms:
-      _target_: medregression3d.data.batchgenerators_transforms.get_test_transforms
+      _target_: medclass3d.data.batchgenerators_transforms.get_test_transforms
       patch_size: ${data.patch_size}
       do_dummy_2d_data_aug: False
 
@@ -66,7 +66,7 @@ data:
 # Model
 # ============================================================================
 model:
-  _target_: medregression3d.models.backbones.resenc.ResEncoder_Regressor
+  _target_: medclass3d.models.backbones.resenc.ResEncoder_Regressor
   name: ${model_name_extractor:${model._target_}}
 
   task: 'Regression'                    # 'Regression' | 'Ordinal_Regression'

@@ -40,7 +40,7 @@ metrics:
 # ============================================================================
 data:
   module:
-    _target_: medregression3d.data.datamodules.AgeReg_DataModule
+    _target_: medclass3d.data.datamodules.AgeReg_DataModule
     name: AgeOrdinalRegression          # Used in the on-disk output path and as the W&B project default
     img_dir: <path_to_dataset>/preprocessed_b2nd   # points at the .b2nd files; preprocessing.json sits one level up
     csv_file: <path_to_csv_file>
@@ -52,13 +52,13 @@ data:
     fold: null                          # auto-set per fold by cli.py during CV
 
     train_transforms:
-      _target_: medregression3d.data.batchgenerators_transforms.get_training_transforms
+      _target_: medclass3d.data.batchgenerators_transforms.get_training_transforms
       patch_size: ${data.patch_size}
       rotation_for_DA: 0.523599
       mirror_axes: [0, 1, 2]
       do_dummy_2d_data_aug: False
     test_transforms:
-      _target_: medregression3d.data.batchgenerators_transforms.get_test_transforms
+      _target_: medclass3d.data.batchgenerators_transforms.get_test_transforms
       patch_size: ${data.patch_size}
       do_dummy_2d_data_aug: False
 
@@ -72,10 +72,10 @@ data:
 # ============================================================================
 model:
   # Available _target_ classes:
-  #   medregression3d.models.backbones.resenc.ResEncoder_Regressor           (plain regression head)
-  #   medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor    (CORAL head)
-  #   medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor_MLP (CORAL head + MLP)
-  _target_: medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor
+  #   medclass3d.models.backbones.resenc.ResEncoder_Regressor           (plain regression head)
+  #   medclass3d.models.backbones.resenc.ResEncoder_OrdinalRegressor    (CORAL head)
+  #   medclass3d.models.backbones.resenc.ResEncoder_OrdinalRegressor_MLP (CORAL head + MLP)
+  _target_: medclass3d.models.backbones.resenc.ResEncoder_OrdinalRegressor
   name: ${model_name_extractor:${model._target_}}
 
   # Task + loss

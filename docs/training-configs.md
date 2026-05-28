@@ -18,11 +18,11 @@ The starting point for any ordinal-regression experiment.
 
 | Setting | Value |
 |---|---|
-| `model._target_` | `medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor` |
+| `model._target_` | `medclass3d.models.backbones.resenc.ResEncoder_OrdinalRegressor` |
 | `model.task` | `'Ordinal_Regression'` |
 | `model.loss_fn` | `null` → CORAL loss (default for ordinal regression) |
 | `model.pretrained` | `True` |
-| `data.module._target_` | `medregression3d.data.datamodules.AgeReg_DataModule` |
+| `data.module._target_` | `medclass3d.data.datamodules.AgeReg_DataModule` |
 | `data.cv.k` | `5` (5-fold cross-validation) |
 | `data.num_classes` | `100` (ordinal levels) |
 | `trainer.max_epochs` | `200` |
@@ -51,11 +51,11 @@ The starting point for any plain (non-ordinal) regression experiment.
 
 | Setting | Value |
 |---|---|
-| `model._target_` | `medregression3d.models.backbones.resenc.ResEncoder_Regressor` |
+| `model._target_` | `medclass3d.models.backbones.resenc.ResEncoder_Regressor` |
 | `model.task` | `'Regression'` |
 | `model.loss_fn` | `null` → `MSELoss` |
 | `model.pretrained` | `False` |
-| `data.module._target_` | `medregression3d.data.datamodules.AgeReg_DataModule` |
+| `data.module._target_` | `medclass3d.data.datamodules.AgeReg_DataModule` |
 | `data.cv.k` | `5` |
 | `trainer.max_epochs` | `200` |
 
@@ -73,7 +73,7 @@ Both the ordinal and regression templates pin `ResEncoder_OrdinalRegressor` / `R
 
 ```yaml
 model:
-  _target_: medregression3d.models.backbones.resenc.ResEncoder_OrdinalRegressor_MLP
+  _target_: medclass3d.models.backbones.resenc.ResEncoder_OrdinalRegressor_MLP
 ```
 
 No new config file needed.

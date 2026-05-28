@@ -40,7 +40,7 @@ source .venv/bin/activate
 # is detected.
 uv pip install torch torchvision --torch-backend=auto
 
-# Install everything else (medregression3d + its remaining deps, editable).
+# Install everything else (medclass3d + its remaining deps, editable).
 # torch/torchvision are already present, so uv keeps the wheels above.
 uv pip install -e .
 ```
@@ -131,7 +131,7 @@ Every training run is driven by one **self-contained** config file in `configs/t
 python scripts/train.py --config-name=<config_name>
 ```
 
-(or `medreg-train --config-name=<config_name>` — the installed console script does the same thing).
+(or `medclass-train --config-name=<config_name>` — the installed console script does the same thing).
 
 If you forget the flag, `train.py` prints a friendly error listing the available configs.
 

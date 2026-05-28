@@ -1,4 +1,4 @@
-from medregression3d.cli import main
+from medclass3d.cli import main
 
 if __name__ == "__main__":
     main()

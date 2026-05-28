@@ -37,7 +37,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Allow the script to import the medregression3d package even if launched
+# Allow the script to import the medclass3d package even if launched
 # directly without the editable install on PYTHONPATH (matches the convention
 # in preprocess_ct.py / preprocess_mri.py).
 sys.path.append(
@@ -53,20 +53,20 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from medregression3d.data.datamodules import AgeReg_Data
-from medregression3d.data.preprocessing.blosc_helper import (
+from medclass3d.data.datamodules import AgeReg_Data
+from medclass3d.data.preprocessing.blosc_helper import (
     comp_blosc2_params,
     save_case,
 )
-from medregression3d.data.preprocessing.cropping import crop_to_nonzero
-from medregression3d.data.preprocessing.default_resampling import (
+from medclass3d.data.preprocessing.cropping import crop_to_nonzero
+from medclass3d.data.preprocessing.default_resampling import (
     resample_data_or_seg_to_spacing,
 )
-from medregression3d.data.preprocessing.normalization import (
+from medclass3d.data.preprocessing.normalization import (
     CTNormalization,
     ZScoreNormalization,
 )
-from medregression3d.utils.parsing import make_omegaconf_resolvers
+from medclass3d.utils.parsing import make_omegaconf_resolvers
 
 
 # --------------------------------------------------------------------------- #

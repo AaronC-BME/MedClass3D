@@ -7,19 +7,19 @@ from timm.optim import RMSpropTF
 from torchmetrics import MetricCollection
 from torchmetrics.aggregation import CatMetric
 
-from medregression3d.data.mixup import mixup_criterion, mixup_data
-from medregression3d.evaluation.metrics import _build_regression_metrics
-from medregression3d.models.losses import (
+from medclass3d.data.mixup import mixup_criterion, mixup_data
+from medclass3d.evaluation.metrics import _build_regression_metrics
+from medclass3d.models.losses import (
     VALID_TASKS,
     _build_criterion,
     coral_loss,
     label_to_levels,
 )
-from medregression3d.training.optim import (
+from medclass3d.training.optim import (
     CosineAnnealingLR_DoubleWarmstart,
     CosineAnnealingLR_Warmstart,
 )
-from medregression3d.training.sam import SAM
+from medclass3d.training.sam import SAM
 
 
 class BaseModel(L.LightningModule):

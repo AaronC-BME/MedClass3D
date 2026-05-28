@@ -30,7 +30,7 @@ import torch
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
-from medregression3d.utils.parsing import make_omegaconf_resolvers
+from medclass3d.utils.parsing import make_omegaconf_resolvers
 
 
 def _select_best_ckpt(ckp_paths, prefer_best=True):
