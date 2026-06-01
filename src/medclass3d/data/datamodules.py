@@ -1,4 +1,3 @@
-import os
 from collections import Counter
 from pathlib import Path
 
@@ -22,10 +21,21 @@ class Class_Data(Dataset):
         - <label>    : integer class index (column name configurable via
                        ``label_column``)
 
+    On-disk layout is one sub-directory per subject::
+
+        <img_dir>/<image_name>/<image_name>.b2nd        # image,  (1, Z, Y, X)
+        <img_dir>/<image_name>/<image_name>_mask.b2nd   # mask,   (1, Z, Y, X)  [only if use_mask]
+
     Labels are emitted as ``torch.long``. Balanced class_weights are computed
     on the ``train`` split and exposed via ``self.class_weights``; the trainer
     picks them up in ``setup()`` to finalize weighted CE / weighted focal
     criteria.
+
+    When ``use_mask`` is True a paired binary/label mask is loaded alongside
+    each image and concatenated as a second channel, yielding a ``(2, Z, Y, X)``
+    sample. The mask rides batchgenerators' ``segmentation`` key through the
+    transforms so it receives only spatial augmentation (nearest-neighbour, no
+    intensity transforms) before being merged onto the image.
     """
 
     def __init__(
@@ -37,11 +47,13 @@ class Class_Data(Dataset):
         label_column="label",
         transform=None,
         train=True,
+        use_mask=False,
     ):
         super().__init__()
         self.img_dir = Path(img_dir)
         self.train = train
         self.transform = transform
+        self.use_mask = use_mask
 
         df = pd.read_csv(csv_file)
 
@@ -87,13 +99,32 @@ class Class_Data(Dataset):
         # Optional: verify files exist up front so failures surface at setup, not mid-epoch
         missing_files = [
             f for f in self.img_files
-            if not (self.img_dir / f"{f}.b2nd").exists()
+            if not self._image_path(f).exists()
         ]
         if missing_files:
             missing_list = "\n  ".join(missing_files)
             raise FileNotFoundError(
                 f"{len(missing_files)} image files not found under {self.img_dir}:\n  {missing_list}"
             )
+
+        if self.use_mask:
+            missing_masks = [
+                f for f in self.img_files
+                if not self._mask_path(f).exists()
+            ]
+            if missing_masks:
+                missing_list = "\n  ".join(missing_masks)
+                raise FileNotFoundError(
+                    f"use_mask=True but {len(missing_masks)} mask files not found under "
+                    f"{self.img_dir}:\n  {missing_list}\n"
+                    f"Re-run preprocessing with --mask-dir to generate <id>_mask.b2nd."
+                )
+
+    def _image_path(self, name):
+        return self.img_dir / name / f"{name}.b2nd"
+
+    def _mask_path(self, name):
+        return self.img_dir / name / f"{name}_mask.b2nd"
 
     @staticmethod
     def _compute_class_weights(int_labels):
@@ -116,18 +147,28 @@ class Class_Data(Dataset):
         return torch.from_numpy(weights).float()
 
     def __getitem__(self, idx):
-        img_path = os.path.join(
-            self.img_dir,
-            self.img_files[idx] + ".b2nd",
-        )
-        img, _ = Blosc2IO.load(img_path, mode="r")
+        name = self.img_files[idx]
+        img_arr, _ = Blosc2IO.load(str(self._image_path(name)), mode="r")
 
+        kwargs = {"image": torch.from_numpy(img_arr[...])}
+        if self.use_mask:
+            mask_arr, _ = Blosc2IO.load(str(self._mask_path(name)), mode="r")
+            kwargs["segmentation"] = torch.from_numpy(mask_arr[...])
+
+        # Training applies the full augmentation pipeline; val/test applies only
+        # the first transform (SpatialTransform = deterministic center crop to
+        # patch size). Both apply spatial ops to the segmentation key with
+        # nearest-neighbour interpolation; intensity transforms touch only image.
         if self.train:
-            img = self.transform(**{"image": torch.from_numpy(img[...])})["image"]
+            out = self.transform(**kwargs)
         else:
-            img = self.transform.transforms[0](
-                **{"image": torch.from_numpy(img[...])}
-            )["image"]
+            out = self.transform.transforms[0](**kwargs)
+
+        img = out["image"]
+        if self.use_mask:
+            # Merge the spatially-augmented mask on as a second channel. Cast to
+            # the image dtype so the network sees a clean float 0/1 channel.
+            img = torch.cat([img, out["segmentation"].to(img.dtype)], dim=0)
 
         return img, self.labels[idx]
 
@@ -142,6 +183,7 @@ class Class_DataModule(BaseDataModule):
         csv_file,
         label_column="label",
         use_balanced_sampling=False,
+        use_mask=False,
         **params,
     ):
         super().__init__(**params)
@@ -149,6 +191,7 @@ class Class_DataModule(BaseDataModule):
         self.csv_file = csv_file
         self.label_column = label_column
         self.use_balanced_sampling = use_balanced_sampling
+        self.use_mask = use_mask
 
     @property
     def class_weights(self):
@@ -165,6 +208,7 @@ class Class_DataModule(BaseDataModule):
             csv_file=self.csv_file,
             label_column=self.label_column,
             fold=self.fold,
+            use_mask=self.use_mask,
         )
 
         # Peek at the CSV once to find which splits actually exist for this

@@ -16,7 +16,7 @@ For external inference to be valid, the preprocessing applied at inference time 
 ```
 preprocess_{ct,mri}.py
    writes  ──►  <out_root>/preprocessing.json
-                <out_root>/preprocessed_b2nd/*.b2nd
+                <out_root>/preprocessed_b2nd/<image_id>/<image_id>.b2nd  (+ <image_id>_mask.b2nd)
 
 train.py
    reads  ──►   <out_root>/preprocessing.json   (next to img_dir)
@@ -33,8 +33,11 @@ The sidecar records:
 - `skip_resample`, `resampling_order`.
 - For CT: `stats` (`mean`, `std`, `percentile_00_5`, `percentile_99_5`) and `foreground_hu_threshold`.
 - For MRI: `foreground_threshold` and `normalization: per_case_zscore` (per-case, no shared state).
+- `has_masks` — `true` if the dataset was preprocessed with `--mask-dir` (image + mask 2-channel input).
 
 If a run's `Configs/` is missing `preprocessing.json` (older runs from before this mechanism existed), `predict_external.py` will refuse to run. Either re-preprocess and re-train, or manually copy a sidecar with the correct values into the run's `Configs/` directory.
+
+If `has_masks` is `true`, `predict_external.py` requires `--mask-dir` (a directory of `<image_id>_mask.nii.gz` masks co-registered to the input images); it preprocesses and feeds them as the second channel exactly as at training time.
 
 ---
 

@@ -53,6 +53,8 @@ from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
+from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice
+
 from medclass3d.data.datamodules import Class_Data
 from medclass3d.data.preprocessing.blosc_helper import (
     comp_blosc2_params,
@@ -67,6 +69,19 @@ from medclass3d.data.preprocessing.normalization import (
     ZScoreNormalization,
 )
 from medclass3d.utils.parsing import make_omegaconf_resolvers
+
+# Mask file naming, kept in sync with preprocess_ct.py / preprocess_mri.py:
+# image <id>.nii.gz -> mask <id>_mask.nii.gz -> preprocessed <id>_mask.b2nd
+MASK_SUFFIX = "_mask"
+
+
+def _strip_nifti_ext(name: str) -> str:
+    """Strip a trailing .nii.gz or .nii from a filename, returning the case id."""
+    if name.endswith(".nii.gz"):
+        return name[:-len(".nii.gz")]
+    if name.endswith(".nii"):
+        return name[:-len(".nii")]
+    return name
 
 
 # --------------------------------------------------------------------------- #
@@ -105,12 +120,38 @@ def _preprocess_one(
     skip_resample: bool,
     resampling_order: int,
     stats: Optional[dict] = None,
-) -> np.ndarray:
-    """Return a (1, Z, Y, X) float32 normalized volume ready to be saved as .b2nd."""
+    mask_path: Optional[str] = None,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Return ``(image, mask)`` ready to be saved as .b2nd.
+
+    ``image`` is a (1, Z, Y, X) float32 normalized volume. ``mask`` is a
+    (1, Z, Y, X) int8 array co-registered + cropped to match the image, or None
+    when ``mask_path`` is not given. The pipeline mirrors preprocess_ct.py /
+    preprocess_mri.py so the model sees inputs identical to training.
+    """
     img = sitk.ReadImage(image_path)
     original_spacing = img.GetSpacing()[::-1]
     data = sitk.GetArrayFromImage(img)
+
+    seg = None
+    if mask_path is not None:
+        mask_img = sitk.ReadImage(mask_path)
+        mask_spacing = mask_img.GetSpacing()[::-1]
+        seg = sitk.GetArrayFromImage(mask_img)
+        if seg.shape != data.shape:
+            raise ValueError(
+                f"mask shape {seg.shape} != image shape {data.shape}; "
+                "mask must be co-registered to its image"
+            )
+        if not all(abs(a - b) < 1e-3 for a, b in zip(mask_spacing, original_spacing)):
+            raise ValueError(
+                f"mask spacing {mask_spacing} != image spacing {original_spacing}; "
+                "mask must be co-registered to its image"
+            )
+
     data = data[np.newaxis, ...].astype(np.float32, copy=False)
+    if seg is not None:
+        seg = seg[np.newaxis, ...].astype(np.float32, copy=False)
 
     if np.any(np.isnan(data)) or np.any(np.isinf(data)):
         raise ValueError(f"NaN/Inf in input {image_path}")
@@ -129,11 +170,18 @@ def _preprocess_one(
                 is_seg=False,
                 order=resampling_order,
             )
+            if seg is not None:
+                seg = resample_data_or_seg_to_spacing(
+                    seg, original_spacing, target, is_seg=True, order=0,
+                )
 
-    # 2. Crop to non-zero bounding box
-    data, _seg, _bbox = crop_to_nonzero(data, seg=None)
+    # 2. Crop to non-zero bounding box (mask follows the image's bbox)
+    data, _seg, bbox = crop_to_nonzero(data, seg=None)
+    if seg is not None:
+        slicer = (slice(None),) + tuple(bounding_box_to_slice(bbox))
+        seg = seg[slicer]
 
-    # 3. Normalize per modality
+    # 3. Normalize per modality (image only; mask stays raw)
     if modality == "ct":
         if stats is None:
             raise ValueError("CT modality requires stats in preprocessing.json")
@@ -152,10 +200,13 @@ def _preprocess_one(
             "Expected 'ct' or 'mri'."
         )
 
-    return data
+    if seg is not None:
+        seg = seg.astype(np.int8, copy=False)
+    return data, seg
 
 
 def _save_b2nd(data: np.ndarray, out_path_no_ext: str) -> None:
+    os.makedirs(os.path.dirname(out_path_no_ext), exist_ok=True)
     block_size, chunk_size = comp_blosc2_params(
         data.shape, (160, 160, 160), data.itemsize,
     )
@@ -166,9 +217,14 @@ def _preprocess_directory(
     input_dir: Path,
     sidecar: dict,
     out_dir: Path,
+    mask_dir: Optional[Path] = None,
 ) -> list:
-    """Preprocess every .nii.gz under `input_dir`, write .b2nd files to `out_dir`,
-    return the list of successfully-processed image IDs (without extension)."""
+    """Preprocess every .nii.gz under `input_dir` into the per-subject layout
+    ``out_dir/<id>/<id>.b2nd`` (+ ``<id>_mask.b2nd`` when `mask_dir` is given),
+    returning the list of successfully-processed image IDs.
+
+    When `mask_dir` is set, every image must have a matching
+    ``<id>_mask.nii[.gz]`` mask (missing masks are an error)."""
     image_paths = sorted(str(p) for p in input_dir.glob("*.nii.gz"))
     if not image_paths:
         raise SystemExit(f"No .nii.gz files found in {input_dir}")
@@ -182,30 +238,50 @@ def _preprocess_directory(
     if target_spacing is not None:
         target_spacing = tuple(target_spacing)
 
+    # Resolve + validate masks up front so a missing mask fails loudly.
+    mask_for_image = {}
+    if mask_dir is not None:
+        missing = []
+        for img_path in image_paths:
+            case_id = _strip_nifti_ext(Path(img_path).name)
+            mp = mask_dir / f"{case_id}{MASK_SUFFIX}.nii.gz"
+            if not mp.is_file():
+                alt = mask_dir / f"{case_id}{MASK_SUFFIX}.nii"
+                mp = alt if alt.is_file() else mp
+            if not mp.is_file():
+                missing.append(case_id)
+            else:
+                mask_for_image[img_path] = str(mp)
+        if missing:
+            listed = "\n  ".join(missing)
+            raise SystemExit(
+                f"--mask-dir set but {len(missing)} image(s) have no matching "
+                f"'<id>{MASK_SUFFIX}.nii[.gz]' in {mask_dir}:\n  {listed}"
+            )
+
     print(
         f"Preprocessing {len(image_paths)} {modality.upper()} image(s) using "
-        f"target_spacing={target_spacing}, skip_resample={skip_resample}"
+        f"target_spacing={target_spacing}, skip_resample={skip_resample}, "
+        f"masks={mask_dir is not None}"
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
     ok_ids = []
     for img_path in tqdm(image_paths):
-        case_id = Path(img_path).name
-        if case_id.endswith(".nii.gz"):
-            case_id = case_id[:-len(".nii.gz")]
-        elif case_id.endswith(".nii"):
-            case_id = case_id[:-len(".nii")]
-
+        case_id = _strip_nifti_ext(Path(img_path).name)
         try:
-            data = _preprocess_one(
+            data, seg = _preprocess_one(
                 image_path=img_path,
                 modality=modality,
                 target_spacing=target_spacing,
                 skip_resample=skip_resample,
                 resampling_order=resampling_order,
                 stats=stats,
+                mask_path=mask_for_image.get(img_path),
             )
-            _save_b2nd(data, str(out_dir / case_id))
+            _save_b2nd(data, str(out_dir / case_id / case_id))
+            if seg is not None:
+                _save_b2nd(seg, str(out_dir / case_id / f"{case_id}{MASK_SUFFIX}"))
             ok_ids.append(case_id)
         except Exception as e:
             print(f"[skip] {case_id}: {e}")
@@ -225,6 +301,10 @@ def main():
                         help="Training-run directory containing Configs/{config.yaml, preprocessing.json}.")
     parser.add_argument("--input-dir", required=True, type=Path,
                         help="Directory of raw .nii.gz images to predict on.")
+    parser.add_argument("--mask-dir", type=Path, default=None,
+                        help="Directory of co-registered masks (<id>_mask.nii.gz). "
+                             "REQUIRED when the run was trained with masks "
+                             "(preprocessing.json has_masks=true); ignored otherwise.")
     parser.add_argument("--fold", type=int, default=0,
                         help="Which fold's checkpoint to load. Default: 0")
     parser.add_argument("--pred-dir", type=Path, default=None,
@@ -269,6 +349,24 @@ def main():
     if sidecar.get("modality") == "ct":
         print(f"  stats          = {sidecar.get('stats')}")
 
+    # ---- Mask handling: must match how the run was trained ---- #
+    has_masks = bool(sidecar.get("has_masks", False))
+    print(f"  has_masks      = {has_masks}")
+    if has_masks:
+        if args.mask_dir is None:
+            raise SystemExit(
+                "This run was trained with masks (preprocessing.json has_masks=true), "
+                "so --mask-dir is required. Provide a directory containing a "
+                f"'<id>{MASK_SUFFIX}.nii[.gz]' for every input image."
+            )
+        if not args.mask_dir.is_dir():
+            raise SystemExit(f"--mask-dir does not exist: {args.mask_dir}")
+        mask_dir = args.mask_dir
+    else:
+        if args.mask_dir is not None:
+            print("[warn] --mask-dir given but this run was trained without masks; ignoring it.")
+        mask_dir = None
+
     fold_id = str(args.fold)
     ckp_dir = run_dir / "folds" / fold_id
     ckp_list = list(ckp_dir.glob("*.ckpt"))
@@ -290,7 +388,7 @@ def main():
         b2nd_dir = Path(tmp_root) / "preprocessed_b2nd"
 
     try:
-        ok_ids = _preprocess_directory(args.input_dir, sidecar, b2nd_dir)
+        ok_ids = _preprocess_directory(args.input_dir, sidecar, b2nd_dir, mask_dir=mask_dir)
         if not ok_ids:
             raise SystemExit("No images preprocessed successfully.")
         print(f"[preprocess] {len(ok_ids)} image(s) written to {b2nd_dir}")
@@ -336,6 +434,7 @@ def main():
             label_column=label_column,
             transform=test_transforms,
             train=False,
+            use_mask=has_masks,
         )
         loader = DataLoader(
             predict_ds,

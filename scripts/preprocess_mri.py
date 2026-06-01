@@ -6,12 +6,21 @@ Reads raw NIfTI MR images, then for each case:
      or set explicitly with --target-spacing).
   2. Crops to the non-zero bounding box (matches nnssl behavior).
   3. Applies per-case z-score normalization on the foreground (voxels > 0).
-  4. Saves as Blosc2 in this layout:
+  4. Saves as Blosc2 in this layout (one sub-directory per subject):
 
         <out_root>/
             preprocessing.json          <- modality, target spacing, normalization
             preprocessed_b2nd/
-                <id>.b2nd               <- one file per input image
+                <id>/
+                    <id>.b2nd           <- image, one per input image
+                    <id>_mask.b2nd      <- mask (only when --mask-dir is given)
+
+When --mask-dir is supplied, each image <id>.nii.gz must have a co-registered
+mask named <id>_mask.nii.gz in that directory. The mask is resampled with
+nearest-neighbour, cropped with the image's bounding box, saved raw (no
+normalization) as a second-channel file, and recorded via "has_masks": true in
+preprocessing.json. Train with model.input_channels: 2 and
+data.module.use_mask: True.
 
 The `preprocessing.json` sidecar lets `scripts/predict_external.py` faithfully
 replay the same preprocessing on raw NIfTI files at inference time. `cli.py`
@@ -68,6 +77,8 @@ import numpy as np
 import SimpleITK as sitk
 from tqdm import tqdm
 
+from acvl_utils.cropping_and_padding.bounding_boxes import bounding_box_to_slice
+
 from medclass3d.data.preprocessing.cropping import crop_to_nonzero
 from medclass3d.data.preprocessing.normalization import ZScoreNormalization
 from medclass3d.data.preprocessing.blosc_helper import save_case, comp_blosc2_params
@@ -75,6 +86,19 @@ from medclass3d.data.preprocessing.default_resampling import resample_data_or_se
 
 # Cubic interpolation for MR image data. Matches SSL3D template default.
 RESAMPLING_ORDER = 3
+
+# Suffix appended to a case id to find its mask in --mask-dir, and the suffix
+# used for the preprocessed mask file on disk: <id>_mask.nii.gz -> <id>_mask.b2nd
+MASK_SUFFIX = "_mask"
+
+
+def _strip_nifti_ext(name: str) -> str:
+    """Strip a trailing .nii.gz or .nii from a filename, returning the case id."""
+    if name.endswith(".nii.gz"):
+        return name[:-len(".nii.gz")]
+    if name.endswith(".nii"):
+        return name[:-len(".nii")]
+    return name
 
 
 def read_image_spacing(image_path: str) -> tuple:
@@ -89,20 +113,35 @@ def read_image_spacing(image_path: str) -> tuple:
 # --------------------------------------------------------------------------- #
 # Per-case processing
 # --------------------------------------------------------------------------- #
+def _save_b2nd(data: np.ndarray, out_path_truncated: str) -> None:
+    """Save a (C, Z, Y, X) array as Blosc2. ``out_path_truncated`` is the path
+    without the ``.b2nd`` extension (save_case appends it)."""
+    os.makedirs(os.path.dirname(out_path_truncated), exist_ok=True)
+    block_size, chunk_size = comp_blosc2_params(
+        data.shape, (160, 160, 160), data.itemsize
+    )
+    save_case(data, out_path_truncated, chunks=chunk_size, blocks=block_size)
+
+
 def process_one_case(args: tuple) -> Optional[str]:
     """
     Worker function. Takes a tuple so it works with Pool.imap.
     Returns the case ID on success, None on failure.
 
     Pipeline order matters here:
-        1. Load
+        1. Load image (and mask, if provided)
         2. Resample to target spacing (changes voxel grid, preserves anatomy)
         3. Crop to nonzero (safe to do after resampling - bbox tracks anatomy)
-        4. Per-case z-score on the foreground mask (voxels > 0)
+        4. Per-case z-score on the foreground mask (voxels > 0); image only
         5. Save
+
+    The mask, when present, must be co-registered to its image (identical voxel
+    grid). It is resampled with nearest-neighbour (is_seg=True, order 0) so label
+    values are preserved, and cropped with the *image's* bounding box so the two
+    channels stay aligned. It is NOT normalized.
     """
-    image_path, out_path_truncated, target_spacing, skip_resample = args
-    case_id = Path(out_path_truncated).name
+    (image_path, mask_path, out_dir, case_id,
+     target_spacing, skip_resample) = args
 
     try:
         # ---- 1. Load ----
@@ -111,8 +150,27 @@ def process_one_case(args: tuple) -> Optional[str]:
         original_spacing = img.GetSpacing()[::-1]
         data = sitk.GetArrayFromImage(img)  # (Z, Y, X)
 
+        seg = None
+        if mask_path is not None:
+            mask_img = sitk.ReadImage(mask_path)
+            mask_spacing = mask_img.GetSpacing()[::-1]
+            seg = sitk.GetArrayFromImage(mask_img)  # (Z, Y, X)
+            # ---- Co-registration check ----
+            # The mask must live on the same voxel grid as its image, otherwise
+            # the image-derived crop bbox would not apply to it.
+            if seg.shape != data.shape:
+                print(f"[skip] {case_id}: mask shape {seg.shape} != image shape "
+                      f"{data.shape}; mask must be co-registered to its image")
+                return None
+            if not all(abs(a - b) < 1e-3 for a, b in zip(mask_spacing, original_spacing)):
+                print(f"[skip] {case_id}: mask spacing {mask_spacing} != image "
+                      f"spacing {original_spacing}; mask must be co-registered")
+                return None
+
         # Add channel dim for compatibility with cropping/resampling utilities
         data = data[np.newaxis, ...].astype(np.float32, copy=False)  # (1, Z, Y, X)
+        if seg is not None:
+            seg = seg[np.newaxis, ...].astype(np.float32, copy=False)  # (1, Z, Y, X)
 
         # Sanity check
         if np.any(np.isnan(data)) or np.any(np.isinf(data)):
@@ -135,12 +193,26 @@ def process_one_case(args: tuple) -> Optional[str]:
                     is_seg=False,
                     order=RESAMPLING_ORDER,
                 )
+                if seg is not None:
+                    seg = resample_data_or_seg_to_spacing(
+                        seg,
+                        original_spacing,
+                        target,
+                        is_seg=True,
+                        order=0,
+                    )
 
         # ---- 3. Crop to non-zero bounding box ----
         # For skull-stripped MRI this often trims a sizeable margin.
-        data, _seg, _bbox = crop_to_nonzero(data, seg=None)
+        data, _seg, bbox = crop_to_nonzero(data, seg=None)
+        if seg is not None:
+            # Apply the *image's* bbox to the mask directly. We deliberately do
+            # NOT pass seg into crop_to_nonzero — that path writes -1 into the
+            # background, which would pollute the raw label channel.
+            slicer = (slice(None),) + tuple(bounding_box_to_slice(bbox))
+            seg = seg[slicer]
 
-        # ---- 4. Per-case z-score on foreground (voxels > 0) ----
+        # ---- 4. Per-case z-score on foreground (voxels > 0); image only ----
         foreground_mask = data[0] > 0
         if not foreground_mask.any():
             print(f"[skip] {case_id}: empty foreground after cropping")
@@ -151,14 +223,12 @@ def process_one_case(args: tuple) -> Optional[str]:
         # restricts mean/std to true tissue voxels.
         data = normalizer.run(data, seg=foreground_mask[np.newaxis, ...])
 
-        # ---- 5. Save as Blosc2 ----
-        # save_case typically appends ".b2nd" itself; we pass the path without
-        # the extension to match the existing helper's convention.
-        os.makedirs(os.path.dirname(out_path_truncated), exist_ok=True)
-        block_size, chunk_size = comp_blosc2_params(
-            data.shape, (160, 160, 160), data.itemsize
-        )
-        save_case(data, out_path_truncated, chunks=chunk_size, blocks=block_size)
+        # ---- 5. Save as Blosc2 in the per-subject sub-directory ----
+        # Layout: <out_dir>/<case_id>.b2nd (+ <case_id>_mask.b2nd)
+        _save_b2nd(data, os.path.join(out_dir, case_id))
+        if seg is not None:
+            _save_b2nd(seg.astype(np.int8, copy=False),
+                       os.path.join(out_dir, case_id + MASK_SUFFIX))
 
         return case_id
 
@@ -178,8 +248,14 @@ def main() -> None:
                         help="One or more directories containing raw .nii.gz MR images.")
     parser.add_argument("--out-root", required=True, type=Path,
                         help="Output directory for this dataset. The script writes to "
-                             "<out-root>/preprocessed_b2nd/<id>.b2nd and "
+                             "<out-root>/preprocessed_b2nd/<id>/<id>.b2nd and "
                              "<out-root>/preprocessing.json")
+    parser.add_argument("--mask-dir", type=Path, default=None,
+                        help="Optional directory of co-registered masks. For each "
+                             "image <id>.nii.gz the matching mask must be named "
+                             "<id>_mask.nii.gz. When set, the mask is saved as a "
+                             "second channel (<id>_mask.b2nd) and every image must "
+                             "have a matching mask (missing masks are an error).")
     parser.add_argument("--target-spacing", type=float, nargs=3,
                         default=None, metavar=("Z", "Y", "X"),
                         help="Target spacing in mm as three floats: Z Y X. "
@@ -203,6 +279,31 @@ def main() -> None:
         raise SystemExit(f"No .nii.gz files found in any of: {args.in_dir}")
 
     print(f"Found {len(image_paths)} MR images across {len(args.in_dir)} directory(ies).")
+
+    # ---- Resolve + validate masks (optional) ---- #
+    use_mask = args.mask_dir is not None
+    mask_for_image = {}  # image_path -> mask_path
+    if use_mask:
+        if not args.mask_dir.is_dir():
+            raise SystemExit(f"--mask-dir does not exist: {args.mask_dir}")
+        missing = []
+        for img_path in image_paths:
+            case_id = _strip_nifti_ext(Path(img_path).name)
+            mask_path = args.mask_dir / f"{case_id}{MASK_SUFFIX}.nii.gz"
+            if not mask_path.is_file():
+                alt = args.mask_dir / f"{case_id}{MASK_SUFFIX}.nii"
+                mask_path = alt if alt.is_file() else mask_path
+            if not mask_path.is_file():
+                missing.append(case_id)
+            else:
+                mask_for_image[img_path] = str(mask_path)
+        if missing:
+            listed = "\n  ".join(missing)
+            raise SystemExit(
+                f"--mask-dir set but {len(missing)} image(s) have no matching "
+                f"'<id>{MASK_SUFFIX}.nii[.gz]' in {args.mask_dir}:\n  {listed}"
+            )
+        print(f"[note] matched masks for all {len(image_paths)} images in {args.mask_dir}")
 
     # ---- Resolve target spacing ---- #
     if args.skip_resample:
@@ -229,7 +330,10 @@ def main() -> None:
     dataset_dir = args.out_root
     b2nd_dir = dataset_dir / "preprocessed_b2nd"
     b2nd_dir.mkdir(parents=True, exist_ok=True)
-    print(f"\nWriting outputs to {b2nd_dir}/<id>.b2nd")
+    if use_mask:
+        print(f"\nWriting outputs to {b2nd_dir}/<id>/<id>.b2nd (+ <id>_mask.b2nd)")
+    else:
+        print(f"\nWriting outputs to {b2nd_dir}/<id>/<id>.b2nd")
 
     # ---- Write preprocessing.json sidecar ---- #
     # Records every knob predict_external.py needs to replay this preprocessing
@@ -242,6 +346,7 @@ def main() -> None:
         "resampling_order": RESAMPLING_ORDER,
         "foreground_threshold": 0,
         "normalization": "per_case_zscore",
+        "has_masks": use_mask,
         "preprocess_script": "preprocess_mri.py",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -252,15 +357,13 @@ def main() -> None:
 
     job_args = []
     for img_path in image_paths:
-        case_id = Path(img_path).name
-        if case_id.endswith(".nii.gz"):
-            case_id = case_id[:-len(".nii.gz")]
-        elif case_id.endswith(".nii"):
-            case_id = case_id[:-len(".nii")]
-        out_path_truncated = str(b2nd_dir / case_id)
+        case_id = _strip_nifti_ext(Path(img_path).name)
+        out_dir = str(b2nd_dir / case_id)
         job_args.append((
             img_path,
-            out_path_truncated,
+            mask_for_image.get(img_path),  # None when --mask-dir not set
+            out_dir,
+            case_id,
             target_spacing,
             args.skip_resample,
         ))

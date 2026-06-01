@@ -8,6 +8,8 @@
 #   - model.subtask   : 'multiclass' (default) | 'multilabel'
 #   - model.loss_fn   : null=CE | 'focal' | 'weighted_focal' | 'weighted_ce' | 'topk10'
 #   - data.module.use_balanced_sampling : True/False (KClassBalancedBatchSampler)
+#   - data.module.use_mask : True -> add the preprocessed mask as a 2nd input
+#                            channel (also set model.input_channels: 2)
 # =============================================================================
 
 # ---- Output ----------------------------------------------------------------
@@ -41,6 +43,7 @@ data:
     csv_file: <path_to_csv_file>
     label_column: label
     use_balanced_sampling: False                   # KClassBalancedBatchSampler for imbalanced classes
+    use_mask: False                                # True = load <id>_mask.b2nd as a 2nd input channel (set model.input_channels: 2 to match)
     batch_size: 4
     num_workers: 12
     random_batches: False
@@ -75,7 +78,7 @@ model:
   loss_fn: null                         # null=CE | 'focal' | 'weighted_focal' | 'weighted_ce' | 'topk10'
 
   input_dim: 3
-  input_channels: 1
+  input_channels: 1                     # 1 = image only; set to 2 when data.module.use_mask is True
   input_shape: ${data.patch_size}
   num_classes: ${data.num_classes}
   cifar_size: False

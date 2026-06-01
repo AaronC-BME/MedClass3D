@@ -10,8 +10,14 @@ If your dataset can be described as "a directory of preprocessed `.b2nd` files p
    <out-root>/
        preprocessing.json      <- needed by predict_external.py later; cli.py auto-copies it into runs
        preprocessed_b2nd/
-           <image_id>.b2nd
+           <image_id>/
+               <image_id>.b2nd          <- image
+               <image_id>_mask.b2nd     <- mask (only if you passed --mask-dir)
    ```
+
+   To feed an ROI/segmentation mask as a second input channel, preprocess with
+   `--mask-dir` and set `data.module.use_mask: True` + `model.input_channels: 2`
+   in your config. See the preprocessing docs for details.
 
 2. **Build a CSV** with `image_name`, `split`, `fold`, and a label column (integer class indices for classification). See [data-csv-format.md](data-csv-format.md) for the schema.
 

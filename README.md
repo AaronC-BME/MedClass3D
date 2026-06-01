@@ -9,6 +9,7 @@ The main differences from upstream:
 - Self-contained configs: one `configs/train_*.yaml` per experiment with env + data + model + trainer inline — no Hydra `defaults:` composition.
 - Single-CSV split/fold/label format (`image_name`, `split`, `fold`, `label`) instead of separate `splits.json` + `labels.json` files.
 - Preprocessing sidecar: `scripts/preprocess_ct.py` / `scripts/preprocess_mri.py` write `preprocessing.json` next to `preprocessed_b2nd/`; `cli.py` snapshots it into each run's `Configs/` so `predict_external.py` can replay the same preprocessing on new NIfTI files.
+- Optional mask channel: preprocessing can take a co-registered segmentation/ROI mask (`--mask-dir`) and store it alongside each image, so training can feed image + mask as a 2-channel input (`data.module.use_mask: True`, `model.input_channels: 2`).
 - Two inference scripts: `scripts/predict_test.py` re-runs val + test from the training CSV (with metrics + confusion matrix); `scripts/predict_external.py` runs the trained model on a directory of raw `.nii.gz` files.
 
 ## Documentation
@@ -60,16 +61,24 @@ You should see your torch version, `cuda: True`, and a non-zero device count if 
 
 Two preprocessing scripts, one per modality: [`scripts/preprocess_ct.py`](scripts/preprocess_ct.py) for CT and [`scripts/preprocess_mri.py`](scripts/preprocess_mri.py) for MRI. Both take one or more directories of `.nii.gz` images, resample to a target spacing (defaults to the per-axis median across the input dataset), crop to the non-zero bounding box, normalize, and save as Blosc2 (`.b2nd`). Center 160³ patches are extracted at training time, not during preprocessing.
 
-Each script writes its output as:
+Each script writes its output as one sub-directory per subject:
 
 ```
 <out-root>/
-    preprocessing.json          <- modality, target spacing, (CT) intensity stats
+    preprocessing.json          <- modality, target spacing, (CT) intensity stats, has_masks
     preprocessed_b2nd/
-        <image_id>.b2nd
+        <image_id>/
+            <image_id>.b2nd          <- image
+            <image_id>_mask.b2nd     <- mask (only when --mask-dir is given)
 ```
 
 The `preprocessing.json` sidecar records every knob `predict_external.py` needs to replay the same preprocessing on new NIfTI files at inference time. `cli.py` automatically copies it into each training run's `Configs/` directory so the run is self-describing.
+
+## Optional: masks as a second input channel
+
+Pass `--mask-dir` to either preprocess script to attach a co-registered segmentation/ROI mask to each image. For an image `<id>.nii.gz` the matching mask must be named `<id>_mask.nii.gz` in `--mask-dir`. The mask is resampled with nearest-neighbour, cropped with the image's bounding box, saved raw (no intensity normalization) as `<id>_mask.b2nd`, and recorded via `has_masks: true` in `preprocessing.json`. Every image must have a matching mask — a missing one is an error.
+
+To train on image + mask, set `data.module.use_mask: True` and `model.input_channels: 2` (the datamodule concatenates the mask as channel 1). For external inference on such a run, pass `--mask-dir` to `predict_external.py`. Full details, including the co-registration requirement, are in [docs/preprocessing-ct.md](docs/preprocessing-ct.md) / [docs/preprocessing-mri.md](docs/preprocessing-mri.md).
 
 For the per-modality pipeline details (resampling, intensity statistics, normalization differences), see [docs/preprocessing-ct.md](docs/preprocessing-ct.md) and [docs/preprocessing-mri.md](docs/preprocessing-mri.md).
 
@@ -81,9 +90,12 @@ The data module doesn't enforce a layout — it just needs `img_dir` (a folder o
 dataset/
 └── <data_name>/
     ├── raw/                    <- original .nii.gz files (kept for re-preprocessing)
+    ├── masks/                  <- optional co-registered <image_id>_mask.nii.gz files
     ├── preprocessing.json      <- written by scripts/preprocess_ct.py / scripts/preprocess_mri.py
     ├── preprocessed_b2nd/      <- .b2nd output from those same scripts
-    │   └── <image_id>.b2nd
+    │   └── <image_id>/
+    │       ├── <image_id>.b2nd
+    │       └── <image_id>_mask.b2nd   <- only when --mask-dir is given
     └── split_labels.csv        <- splits/labels/folds CSV
 ```
 
@@ -101,7 +113,8 @@ python scripts/preprocess_ct.py \
 | Flag | Description |
 |---|---|
 | `--in-dir` | One or more directories of raw `.nii.gz` CT images. Stats and median spacing span all of them. |
-| `--out-root` | Output directory for this dataset. The script writes `<out-root>/preprocessed_b2nd/<image_id>.b2nd` and `<out-root>/preprocessing.json`. |
+| `--out-root` | Output directory for this dataset. The script writes `<out-root>/preprocessed_b2nd/<image_id>/<image_id>.b2nd` and `<out-root>/preprocessing.json`. |
+| `--mask-dir` | **Optional.** Directory of co-registered masks named `<image_id>_mask.nii.gz`. When set, each mask is saved as `<image_id>_mask.b2nd` and every image must have a matching mask. See [docs/preprocessing-ct.md](docs/preprocessing-ct.md). |
 | `--target-spacing Z Y X` | Target voxel spacing in mm. **Optional.** If omitted, defaults to the per-axis median spacing across all input images. |
 | `--skip-resample` | Skip the resampling step entirely (use native spacing). |
 | `--num-workers` | Parallel processes for the stats / spacing / per-case passes. Default `8`. |
@@ -119,7 +132,8 @@ python scripts/preprocess_mri.py \
 | Flag | Description |
 |---|---|
 | `--in-dir` | One or more directories of raw `.nii.gz` MR images. Median spacing spans all of them. |
-| `--out-root` | Output directory for this dataset. The script writes `<out-root>/preprocessed_b2nd/<image_id>.b2nd` and `<out-root>/preprocessing.json`. |
+| `--out-root` | Output directory for this dataset. The script writes `<out-root>/preprocessed_b2nd/<image_id>/<image_id>.b2nd` and `<out-root>/preprocessing.json`. |
+| `--mask-dir` | **Optional.** Directory of co-registered masks named `<image_id>_mask.nii.gz`. When set, each mask is saved as `<image_id>_mask.b2nd` and every image must have a matching mask. See [docs/preprocessing-mri.md](docs/preprocessing-mri.md). |
 | `--target-spacing Z Y X` | Target voxel spacing in mm. **Optional.** If omitted, defaults to the per-axis median spacing across all input images. |
 | `--skip-resample` | Skip the resampling step entirely. |
 | `--num-workers` | Parallel processes. Default `8`. |
