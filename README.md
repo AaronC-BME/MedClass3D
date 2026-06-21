@@ -1,29 +1,10 @@
-# 3D medical image classification repository
-<sub>Copyright German Cancer Research Center (DKFZ) and contributors. Please make sure that your usage of this code is in compliance with its license.<sub>
+# 3D Medical Image Classification
 
-This repository builds on [constantinulrich/SSL3D_classification](https://github.com/constantinulrich/SSL3D_classification), which in turn builds on the [IMAGE CLASSIFICATION FRAMEWORK BY HELMHOLTZ IMAGING](https://github.com/MIC-DKFZ/image_classification) and supports fine-tuning checkpoints from [nnssl](https://github.com/MIC-DKFZ/nnssl).
+This repository provides an easy-to-use pipeline for 3D medical image classification with three key features: 
+- support multi-label and multi-class classification
+- fine-tune foundation models 
+- saliency map analysis
 
-The main differences from upstream:
-- A single `Classification` task with `subtask: 'multiclass' | 'multilabel'`, and a split `loss_fn` knob: `null` (Cross-Entropy / BCEWithLogits), `focal`, `weighted_focal`, `weighted_ce`, `topk10`.
-- Per-class balanced weights are computed on the train split and exposed by the datamodule; `weighted_focal` / `weighted_ce` pick them up automatically.
-- Self-contained configs: one `configs/train_*.yaml` per experiment with env + data + model + trainer inline — no Hydra `defaults:` composition.
-- Single-CSV split/fold/label format (`image_name`, `split`, `fold`, `label`) instead of separate `splits.json` + `labels.json` files.
-- Preprocessing sidecar: `scripts/preprocess_ct.py` / `scripts/preprocess_mri.py` write `preprocessing.json` next to `preprocessed_b2nd/`; `cli.py` snapshots it into each run's `Configs/` so `predict_external.py` can replay the same preprocessing on new NIfTI files.
-- Optional mask channel: preprocessing can take a co-registered segmentation/ROI mask (`--mask-dir`) and store it alongside each image, so training can feed image + mask as a 2-channel input (`data.module.use_mask: True`, `model.input_channels: 2`).
-- Two inference scripts: `scripts/predict_test.py` re-runs val + test from the training CSV (with metrics + confusion matrix); `scripts/predict_external.py` runs the trained model on a directory of raw `.nii.gz` files.
-
-## Documentation
-
-| Topic | File |
-|---|---|
-| CSV schema for splits / labels / folds | [docs/data-csv-format.md](docs/data-csv-format.md) |
-| CT preprocessing — pipeline details | [docs/preprocessing-ct.md](docs/preprocessing-ct.md) |
-| MRI preprocessing — pipeline details | [docs/preprocessing-mri.md](docs/preprocessing-mri.md) |
-| Training configs — what each `train_*.yaml` does | [docs/training-configs.md](docs/training-configs.md) |
-| Adding your own dataset | [docs/custom-datasets.md](docs/custom-datasets.md) |
-| Task / subtask / loss function options | [docs/tasks-and-losses.md](docs/tasks-and-losses.md) |
-| Output directory layout and run naming | [docs/output-layout.md](docs/output-layout.md) |
-| Inference — `predict_test.py` (held-out splits) & `predict_external.py` (raw NIfTI) | [docs/inference.md](docs/inference.md) |
 
 # Installation
 
@@ -37,25 +18,13 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv --python 3.11
 source .venv/bin/activate
 
-# Install PyTorch first. `--torch-backend=auto` detects your CUDA driver and
-# picks the matching wheel (e.g. cu124 / cu128). Falls back to CPU if no CUDA
-# is detected.
 uv pip install torch torchvision --torch-backend=auto
+# Verifying the install
+python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.cuda.is_available(), 'devices:', torch.cuda.device_count())"
+# You should see your torch version, `cuda: True`, and a non-zero device count if you have a GPU available.
 
-# Install everything else (medclass3d + its remaining deps, editable).
-# torch/torchvision are already present, so uv keeps the wheels above.
 uv pip install -e .
 ```
-
-To deactivate the env later, run `deactivate`. To resume work, `cd` into the repo and `source .venv/bin/activate` again.
-
-## Verifying the install
-
-```shell
-python -c "import torch; print('torch:', torch.__version__, 'cuda:', torch.cuda.is_available(), 'devices:', torch.cuda.device_count())"
-```
-
-You should see your torch version, `cuda: True`, and a non-zero device count if you have a GPU available.
 
 # Dataset preprocessing
 
@@ -101,7 +70,7 @@ dataset/
 
 Point the preprocess scripts' `--out-root` at `dataset/<data_name>/`, and your training config's `data.module.img_dir` at `dataset/<data_name>/preprocessed_b2nd/`.
 
-## CT
+### CT
 
 ```bash
 python scripts/preprocess_ct.py \
@@ -120,7 +89,7 @@ python scripts/preprocess_ct.py \
 | `--num-workers` | Parallel processes for the stats / spacing / per-case passes. Default `8`. |
 | `--stats-mean / --stats-std / --stats-pct-00-5 / --stats-pct-99-5` | Optional pre-supplied stats; bypasses the dataset-wide stats pass. All four must be set together. |
 
-## MRI
+### MRI
 
 ```bash
 python scripts/preprocess_mri.py \
@@ -191,15 +160,7 @@ For running inference on a trained model, see [docs/inference.md](docs/inference
 
 ---
 
-**If you use this codebase, please cite:**
-```
-   @misc{Openmind,
-   title={An OpenMind for 3D medical vision self-supervised learning},
-   author={Tassilo Wald and Constantin Ulrich and Jonathan Suprijadi and Sebastian Ziegler and Michal Nohel and Robin Peretzke and Gregor Köhler and Klaus H. Maier-Hein},
-   year={2025},
-   eprint={2412.17041},
-   archivePrefix={arXiv},
-   primaryClass={cs.CV},
-   url={https://arxiv.org/abs/2412.17041},
-   }
-```
+## Acknowledgement
+
+This codebase is adapted from [SSL3D_classification](https://github.com/constantinulrich/SSL3D_classification) and [nnSSL](https://github.com/MIC-DKFZ/nnssl). 
+
