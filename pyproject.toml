@@ -41,6 +41,9 @@ dependencies = [
     "peft>=0.14.0",
     "acvl_utils @ git+https://github.com/MIC-DKFZ/acvl_utils.git",
     "hd-bet",
+    "monai>=1.3.0",
+    "scipy>=1.9.0",
+    "scikit-image>=0.20.0",
 ]
 
 [project.optional-dependencies]
