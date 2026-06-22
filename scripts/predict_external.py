@@ -95,16 +95,22 @@ def _select_best_ckpt(ckp_paths, prefer_best=True):
     if not prefer_best:
         return last[0] if last else (ckp_paths[0] if ckp_paths else None)
 
-    def _parse_acc(p):
-        try:
-            tag = str(p).split("Val_acc=")[1]
-            return float(tag.split(".ckpt")[0])
-        except (IndexError, ValueError):
-            return float("-inf")
+    def _parse_metric(p):
+        # Best checkpoint = highest monitored metric, read from the filename.
+        # New runs write `Val_AUROC=`; older checkpoints used `Val_acc=`, so we
+        # accept both (preferring AUROC) to stay compatible with existing runs.
+        name = str(p)
+        for token in ("Val_AUROC=", "Val_acc="):
+            if token in name:
+                try:
+                    return float(name.split(token)[1].split(".ckpt")[0])
+                except (IndexError, ValueError):
+                    continue
+        return float("-inf")
 
     if not_last:
-        not_last.sort(key=_parse_acc, reverse=True)
-        if _parse_acc(not_last[0]) != float("-inf"):
+        not_last.sort(key=_parse_metric, reverse=True)
+        if _parse_metric(not_last[0]) != float("-inf"):
             return not_last[0]
 
     return last[0] if last else (ckp_paths[0] if ckp_paths else None)
@@ -314,7 +320,7 @@ def main():
     parser.add_argument("--metrics", nargs="+", default=["acc", "balanced_acc", "f1", "auroc"],
                         help="Metric names forwarded to the model. Default: acc balanced_acc f1 auroc")
     parser.add_argument("--prefer-last", action="store_true",
-                        help="Use last.ckpt instead of the best-Val_acc checkpoint.")
+                        help="Use last.ckpt instead of the best-Val_AUROC checkpoint.")
     args = parser.parse_args()
 
     make_omegaconf_resolvers()

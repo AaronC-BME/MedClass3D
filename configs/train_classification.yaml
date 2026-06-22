@@ -12,26 +12,6 @@
 #                            channel (also set model.input_channels: 2)
 # =============================================================================
 
-# ---- Output ----------------------------------------------------------------
-output_dir: ${oc.env:EXPERIMENT_LOCATION,"<path_to_output>"}
-output_subdir: ${output_dir}/${data.module.name}/${trainer.logger.name}/Configs
-hydra:
-  output_subdir: ${output_subdir}
-  job:
-    chdir: False
-  run:
-    dir: .
-
-# ---- Run misc --------------------------------------------------------------
-seed: False
-val_only: False
-
-metrics:
-  - 'acc'
-  - 'balanced_acc'
-  - 'f1'
-  - 'auroc'
-
 # ============================================================================
 # Data
 # ============================================================================
@@ -157,9 +137,9 @@ trainer:
     checkpoint:
       _target_: lightning.pytorch.callbacks.ModelCheckpoint
       dirpath: ???
-      filename: 'epoch{epoch}-Val_loss={Val/loss:.2f}-Val_acc={Val/Accuracy:.3f}'
+      filename: 'epoch{epoch}-Val_loss={Val/loss:.2f}-Val_AUROC={Val/AUROC:.3f}'
       auto_insert_metric_name: False
-      monitor: 'Val/Accuracy'
+      monitor: 'Val/AUROC'
       mode: 'max'
       save_top_k: 3
       save_last: false
@@ -171,3 +151,25 @@ trainer:
     offline: False
     project: <wandb_project_name>
     name: <wandb_run_name>
+
+# ============================================================================
+# Output
+# ============================================================================
+output_dir: ${oc.env:EXPERIMENT_LOCATION,"<path_to_output>"}
+output_subdir: ${output_dir}/${data.module.name}/${trainer.logger.name}/Configs
+hydra:
+  output_subdir: ${output_subdir}
+  job:
+    chdir: False
+  run:
+    dir: .
+
+# ---- Run misc --------------------------------------------------------------
+seed: False
+val_only: False
+
+metrics:
+  - 'acc'
+  - 'balanced_acc'
+  - 'f1'
+  - 'auroc'
