@@ -157,6 +157,13 @@ class BaseModel(L.LightningModule):
         if self.loss_fn in CLASSIFICATION_LOSSES_NEEDING_WEIGHTS:
             class_weights = getattr(self.trainer.datamodule, "class_weights", None)
             if class_weights is None:
+                # The weighted criterion is only used to compute the training
+                # loss. During prediction the loss is never called, so missing
+                # class_weights is harmless -- skip finalizing the criterion
+                # rather than crashing. Training (and any other stage) must
+                # still have weights available, so keep raising there.
+                if stage == "predict":
+                    return
                 raise RuntimeError(
                     f"loss_fn={self.loss_fn!r} requires datamodule.class_weights, "
                     "but the datamodule did not expose any."

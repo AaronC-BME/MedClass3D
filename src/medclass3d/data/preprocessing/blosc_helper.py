@@ -102,4 +102,11 @@ def comp_blosc2_params(
         if all([i == j for i, j in zip(chunk_size, image_size)]):
             break
     # print(image_size, chunk_size, block_size)
+    # Clamp to the actual array size and enforce block <= chunk. For volumes
+    # with an axis smaller than the block target (e.g. a thin crop with Z<32),
+    # the chunk gets clamped to image_size while the block does not, which would
+    # otherwise yield block > chunk and trip blosc2's "blocks cannot be greater
+    # than chunks". No-op for normal (large) cases.
+    chunk_size = tuple(int(min(c, s)) for c, s in zip(chunk_size, image_size))
+    block_size = tuple(int(min(b, c)) for b, c in zip(block_size, chunk_size))
     return tuple(block_size), tuple(chunk_size)

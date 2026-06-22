@@ -49,12 +49,20 @@ def get_training_transforms(
     # deep_supervision_scales: Union[List, Tuple, None],
     mirror_axes: Tuple[int, ...],
     do_dummy_2d_data_aug: bool = False,
+    random_crop: bool = False,
+    patch_center_dist_from_border: int = 0,
     # use_mask_for_norm: List[bool] = None,
     # is_cascaded: bool = False,
     # foreground_labels: Union[Tuple[int, ...], List[int]] = None,
     # regions: List[Union[List[int], Tuple[int, ...], int]] = None,
     # ignore_label: int = None,
 ) -> BasicTransform:
+    # random_crop=False (default) -> patch is taken at the image center (the
+    # historical behavior, preserved for all existing configs). random_crop=True
+    # samples a random patch location; patch_center_dist_from_border bounds how
+    # close the patch center may sit to the volume edge (e.g. patch_size//2 keeps
+    # the whole patch in-bounds). The same sampled crop geometry is applied to
+    # both the image and the segmentation, so the mask channel stays aligned.
     transforms = []
     if do_dummy_2d_data_aug:
         ignore_axes = (0,)
@@ -66,8 +74,8 @@ def get_training_transforms(
     transforms.append(
         SpatialTransform(
             patch_size_spatial,
-            patch_center_dist_from_border=0,
-            random_crop=False,
+            patch_center_dist_from_border=patch_center_dist_from_border,
+            random_crop=random_crop,
             p_elastic_deform=0,
             p_rotation=0.2,
             rotation=rotation_for_DA,

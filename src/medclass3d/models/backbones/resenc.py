@@ -178,35 +178,43 @@ def load_pretrained_weights(
             f"your network: {in_channels_model}"
         )
 
-        repeated_weight_tensor = in_conv_weights_pretrained.repeat(
-            1, in_channels_model, 1, 1, 1) / in_channels_model
-        target_data_ptr = in_conv_weights_pretrained.data_ptr()
-        for key, weights in pretrained_dict.items():
-            if weights.data_ptr() == target_data_ptr:
-                pretrained_dict[key] = repeated_weight_tensor
+        # Inflate the input stem from 1 -> in_channels_model channels by repeating
+        # the single pretrained channel and rescaling so the summed response is
+        # preserved at init. We match the stem conv weights *by shape* rather than
+        # by shared storage (data_ptr): the latter is fragile and only catches the
+        # one key that aliases the sampled tensor. Checkpoints like S3D store
+        # 'encoder.stem.convs.0.conv.weight' and '...all_modules.0.weight' as
+        # distinct tensors, so the data_ptr approach left 'conv.weight' at 1
+        # channel and failed the shape check below. A stem input conv is uniquely
+        # identifiable: the only weight whose in-channel dim equals
+        # in_channels_pretrained in the checkpoint while the matching model key
+        # expects in_channels_model.
+        inflated_keys = []
+        for key, w in pretrained_dict.items():
+            if key not in model_dict:
+                continue
+            mw = model_dict[key]
+            if (
+                w.ndim == mw.ndim
+                and w.ndim >= 2
+                and w.shape[0] == mw.shape[0]
+                and w.shape[1] == in_channels_pretrained
+                and mw.shape[1] == in_channels_model
+                and w.shape[2:] == mw.shape[2:]
+            ):
+                repeat_dims = [1, in_channels_model // in_channels_pretrained] + [1] * (w.ndim - 2)
+                pretrained_dict[key] = w.repeat(*repeat_dims) / in_channels_model
+                inflated_keys.append(key)
 
-        # SPECIAL CASE HARDCODE INCOMING
-        # Normally, these keys have the same data_ptr that points to the weights that are to be replicated:
-        # - encoder.stem.convs.0.conv.weight
-        # - encoder.stem.convs.0.all_modules.0.weight
-        # - decoder.encoder.stem.convs.0.conv.weight
-        # - decoder.encoder.stem.convs.0.all_modules.0.weight
-        # But this is not the case for 'VariableSparkMAETrainer_BS8', where we replace modules from the original
-        # encoder architecture, so that the following two point to a different tensor:
-        # - encoder.stem.convs.0.conv.weight
-        # - decoder.encoder.stem.convs.0.conv.weight
-        # resulting in a shape mismatch for the two missing keys in the check below.
-        # It is important to note, that the weights being trained are located at 'all_modules.0.weight', so we
-        # have to use those as the source of replication
-        if "VariableSparkMAETrainer" in pretrained_weights_file:
-            pretrained_dict["encoder.stem.convs.0.conv.weight"] = repeated_weight_tensor
-            pretrained_dict["decoder.encoder.stem.convs.0.conv.weight"] = (
-                repeated_weight_tensor
-            )
-
+        assert inflated_keys, (
+            "Input channels differ but no stem conv weight could be inflated. "
+            f"Expected a checkpoint weight with in-channel dim {in_channels_pretrained} "
+            f"matching a model weight with in-channel dim {in_channels_model}."
+        )
         print(
-            f"Your network has {in_channels_model} input channels. To accommodate for this, the single input "
-            f"channel of the pretrained model is repeated {in_channels_model} times."
+            f"Your network has {in_channels_model} input channels. The single input channel "
+            f"of the pretrained model is repeated {in_channels_model} times (rescaled by "
+            f"1/{in_channels_model}) for: {inflated_keys}"
         )
 
     skip_strings_in_pretrained = [".seg_layers."]

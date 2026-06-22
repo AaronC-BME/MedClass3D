@@ -19,7 +19,7 @@ def _prepare_cfg(cfg):
     if cfg.seed:
         seed_everything(cfg.seed)
         cfg.trainer.benchmark = False
-        cfg.trainer.deterministic = True
+        cfg.trainer.deterministic = "warn"
 
     # Hydra auto-creates main.log; remove it (W&B already captures everything).
     with suppress(FileNotFoundError):
@@ -159,7 +159,11 @@ def _hydra_main(cfg):
         elif cfg.data.module.fold is None:
             cfg.data.module.fold = "0"
 
-        if cfg.data.cv.k > 1:
+        # Append _fold<k> to the W&B run name for multi-fold CV, and also for a
+        # single-fold rerun (cv.k=1 with an explicit data.module.fold) so reruns
+        # are named consistently. base_name (captured before the loop) still drives
+        # the on-disk checkpoint dir, so checkpoints land in <run>/folds/<k>.
+        if cfg.data.cv.k > 1 or cfg.data.module.fold is not None:
             cfg.trainer.logger.name = f"{base_name}_fold{cfg.data.module.fold}"
 
         _set_checkpoint_dir(cfg, base_name)

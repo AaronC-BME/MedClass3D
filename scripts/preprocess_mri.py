@@ -118,7 +118,7 @@ def _save_b2nd(data: np.ndarray, out_path_truncated: str) -> None:
     without the ``.b2nd`` extension (save_case appends it)."""
     os.makedirs(os.path.dirname(out_path_truncated), exist_ok=True)
     block_size, chunk_size = comp_blosc2_params(
-        data.shape, (160, 160, 160), data.itemsize
+        data.shape, (64, 64, 64), data.itemsize
     )
     save_case(data, out_path_truncated, chunks=chunk_size, blocks=block_size)
 
@@ -141,7 +141,7 @@ def process_one_case(args: tuple) -> Optional[str]:
     channels stay aligned. It is NOT normalized.
     """
     (image_path, mask_path, out_dir, case_id,
-     target_spacing, skip_resample) = args
+     target_spacing, skip_resample, skip_crop) = args
 
     try:
         # ---- 1. Load ----
@@ -203,14 +203,17 @@ def process_one_case(args: tuple) -> Optional[str]:
                     )
 
         # ---- 3. Crop to non-zero bounding box ----
-        # For skull-stripped MRI this often trims a sizeable margin.
-        data, _seg, bbox = crop_to_nonzero(data, seg=None)
-        if seg is not None:
-            # Apply the *image's* bbox to the mask directly. We deliberately do
-            # NOT pass seg into crop_to_nonzero — that path writes -1 into the
-            # background, which would pollute the raw label channel.
-            slicer = (slice(None),) + tuple(bounding_box_to_slice(bbox))
-            seg = seg[slicer]
+        # For skull-stripped MRI this often trims a sizeable margin. Skipped for
+        # fixed-size inputs (e.g. pre-made ROI crops) where cropping would change
+        # the box size and re-center off the original crop center.
+        if not skip_crop:
+            data, _seg, bbox = crop_to_nonzero(data, seg=None)
+            if seg is not None:
+                # Apply the *image's* bbox to the mask directly. We deliberately do
+                # NOT pass seg into crop_to_nonzero — that path writes -1 into the
+                # background, which would pollute the raw label channel.
+                slicer = (slice(None),) + tuple(bounding_box_to_slice(bbox))
+                seg = seg[slicer]
 
         # ---- 4. Per-case z-score on foreground (voxels > 0); image only ----
         foreground_mask = data[0] > 0
@@ -263,6 +266,10 @@ def main() -> None:
                              "all input images is computed and used.")
     parser.add_argument("--skip-resample", action="store_true",
                         help="Skip resampling entirely (use the data as-is).")
+    parser.add_argument("--skip-crop", action="store_true",
+                        help="Skip cropping to the non-zero bounding box. Use for "
+                             "fixed-size inputs (e.g. pre-made ROI crops) so the box "
+                             "size and centering are preserved exactly.")
     parser.add_argument("--num-workers", type=int, default=8,
                         help="Number of parallel processes. Default: 8")
 
@@ -274,9 +281,10 @@ def main() -> None:
 
     image_paths = []
     for d in args.in_dir:
-        image_paths.extend(sorted(str(p) for p in d.glob("*.nii.gz")))
+        found = set(d.glob("*.nii.gz")) | set(d.glob("*.nii"))
+        image_paths.extend(sorted(str(p) for p in found))
     if not image_paths:
-        raise SystemExit(f"No .nii.gz files found in any of: {args.in_dir}")
+        raise SystemExit(f"No .nii/.nii.gz files found in any of: {args.in_dir}")
 
     print(f"Found {len(image_paths)} MR images across {len(args.in_dir)} directory(ies).")
 
@@ -343,6 +351,7 @@ def main() -> None:
         "modality": "mri",
         "target_spacing": list(target_spacing) if target_spacing is not None else None,
         "skip_resample": bool(args.skip_resample),
+        "skip_crop": bool(args.skip_crop),
         "resampling_order": RESAMPLING_ORDER,
         "foreground_threshold": 0,
         "normalization": "per_case_zscore",
@@ -366,6 +375,7 @@ def main() -> None:
             case_id,
             target_spacing,
             args.skip_resample,
+            args.skip_crop,
         ))
 
     print(f"\nProcessing {len(job_args)} cases with {args.num_workers} workers...")
